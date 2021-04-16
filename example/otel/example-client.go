@@ -7,49 +7,28 @@ import (
 	"time"
 
 	"github.com/go-redis/redis/v8"
-	"github.com/go-redis/redis/v8/redisext"
-	"go.opentelemetry.io/otel/api/global"
-	meterStdout "go.opentelemetry.io/otel/exporters/metric/stdout"
-	traceStdout "go.opentelemetry.io/otel/exporters/trace/stdout"
-	"go.opentelemetry.io/otel/sdk/metric/controller/push"
+	"github.com/go-redis/redis/v8/extra/redisotel"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/stdout"
+	controller "go.opentelemetry.io/otel/sdk/metric/controller/basic"
+	processor "go.opentelemetry.io/otel/sdk/metric/processor/basic"
+	"go.opentelemetry.io/otel/sdk/metric/selector/simple"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 func main() {
-	<-time.After(1 * time.Second)
+	ctx := context.Background()
+
+	stop := runExporter(ctx)
+	defer stop(ctx)
 
 	rdb := redis.NewClient(&redis.Options{
 		Addr: ":6379",
 	})
 
-	meterExporter, err := meterStdout.NewExportPipeline(meterStdout.Config{PrettyPrint: true},
-		push.WithPeriod(1*time.Second))
-	if err != nil {
-		log.Fatal(err.Error())
-	} else {
-		global.SetMeterProvider(meterExporter.Provider())
-	}
+	rdb.AddHook(redisotel.TracingHook{})
 
-	traceExporter, err := traceStdout.NewExporter(traceStdout.Options{
-		PrettyPrint: true,
-	})
-	if err != nil {
-		log.Fatal(err.Error())
-	}
-
-	if tp, err := sdktrace.NewProvider(
-		sdktrace.WithSyncer(traceExporter),
-		sdktrace.WithConfig(sdktrace.Config{DefaultSampler: sdktrace.AlwaysSample()}),
-	); err != nil {
-		log.Fatal(err.Error())
-	} else {
-		global.SetTraceProvider(tp)
-	}
-
-	rdb.AddHook(redisext.OpenTelemetryHook{})
-
-	ctx := context.Background()
-	tracer := global.Tracer("Example tracer")
+	tracer := otel.Tracer("Example tracer")
 	ctx, span := tracer.Start(ctx, "start-test-span")
 
 	rdb.Set(ctx, "First value", "value_1", 0)
@@ -76,4 +55,31 @@ func main() {
 	// Wait some time to allow spans to export
 	<-time.After(5 * time.Second)
 	span.End()
+}
+
+func runExporter(ctx context.Context) func(context.Context) error {
+	exporter, err := stdout.NewExporter(stdout.WithPrettyPrint())
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithSyncer(exporter),
+		sdktrace.WithConfig(sdktrace.Config{DefaultSampler: sdktrace.AlwaysSample()}),
+	)
+	otel.SetTracerProvider(tp)
+
+	ctrl := controller.New(
+		processor.New(
+			simple.NewWithExactDistribution(),
+			exporter,
+		),
+		controller.WithPusher(exporter),
+		controller.WithCollectPeriod(1*time.Second),
+	)
+	if err := ctrl.Start(ctx); err != nil {
+		log.Fatal(err)
+	}
+
+	return ctrl.Stop
 }

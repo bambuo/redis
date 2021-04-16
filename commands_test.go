@@ -247,7 +247,7 @@ var _ = Describe("Commands", func() {
 		It("should Command", func() {
 			cmds, err := client.Command(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(len(cmds)).To(BeNumerically("~", 200, 20))
+			Expect(len(cmds)).To(BeNumerically("~", 200, 25))
 
 			cmd := cmds["mget"]
 			Expect(cmd.Name).To(Equal("mget"))
@@ -457,6 +457,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should Object", func() {
+			start := time.Now()
 			set := client.Set(ctx, "key", "hello", 0)
 			Expect(set.Err()).NotTo(HaveOccurred())
 			Expect(set.Val()).To(Equal("OK"))
@@ -470,7 +471,13 @@ var _ = Describe("Commands", func() {
 
 			idleTime := client.ObjectIdleTime(ctx, "key")
 			Expect(idleTime.Err()).NotTo(HaveOccurred())
-			Expect(idleTime.Val()).To(Equal(time.Duration(0)))
+
+			//Redis returned milliseconds/1000, which may cause ObjectIdleTime to be at a critical value,
+			//should be +1s to deal with the critical value problem.
+			//if too much time (>1s) is used during command execution, it may also cause the test to fail.
+			//so the ObjectIdleTime result should be <=now-start+1s
+			//link: https://github.com/redis/redis/blob/5b48d900498c85bbf4772c1d466c214439888115/src/object.c#L1265-L1272
+			Expect(idleTime.Val()).To(BeNumerically("<=", time.Now().Sub(start)+time.Second))
 		})
 
 		It("should Persist", func() {
@@ -770,6 +777,18 @@ var _ = Describe("Commands", func() {
 			Expect(cursor).NotTo(BeZero())
 		})
 
+		It("should ScanType", func() {
+			for i := 0; i < 1000; i++ {
+				set := client.Set(ctx, fmt.Sprintf("key%d", i), "hello", 0)
+				Expect(set.Err()).NotTo(HaveOccurred())
+			}
+
+			keys, cursor, err := client.ScanType(ctx, 0, "", 0, "string").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(keys).NotTo(BeEmpty())
+			Expect(cursor).NotTo(BeZero())
+		})
+
 		It("should SScan", func() {
 			for i := 0; i < 1000; i++ {
 				sadd := client.SAdd(ctx, "myset", fmt.Sprintf("member%d", i))
@@ -1064,6 +1083,37 @@ var _ = Describe("Commands", func() {
 			Expect(get.Val()).To(Equal("0"))
 		})
 
+		It("should GetEX", func() {
+			set := client.Set(ctx, "key", "value", 100*time.Second)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			ttl := client.TTL(ctx, "key")
+			Expect(ttl.Err()).NotTo(HaveOccurred())
+			Expect(ttl.Val()).To(BeNumerically("~", 100*time.Second, 3*time.Second))
+
+			getEX := client.GetEx(ctx, "key", 200*time.Second)
+			Expect(getEX.Err()).NotTo(HaveOccurred())
+			Expect(getEX.Val()).To(Equal("value"))
+
+			ttl = client.TTL(ctx, "key")
+			Expect(ttl.Err()).NotTo(HaveOccurred())
+			Expect(ttl.Val()).To(BeNumerically("~", 200*time.Second, 3*time.Second))
+		})
+
+		It("should GetDel", func() {
+			set := client.Set(ctx, "key", "value", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			getDel := client.GetDel(ctx, "key")
+			Expect(getDel.Err()).NotTo(HaveOccurred())
+			Expect(getDel.Val()).To(Equal("value"))
+
+			get := client.Get(ctx, "key")
+			Expect(get.Err()).To(Equal(redis.Nil))
+		})
+
 		It("should Incr", func() {
 			set := client.Set(ctx, "key", "10", 0)
 			Expect(set.Err()).NotTo(HaveOccurred())
@@ -1122,6 +1172,22 @@ var _ = Describe("Commands", func() {
 			Expect(mGet.Val()).To(Equal([]interface{}{"hello1", "hello2", nil}))
 		})
 
+		It("should scan Mget", func() {
+			err := client.MSet(ctx, "key1", "hello1", "key2", 123).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			res := client.MGet(ctx, "key1", "key2", "_")
+			Expect(res.Err()).NotTo(HaveOccurred())
+
+			type data struct {
+				Key1 string `redis:"key1"`
+				Key2 int    `redis:"key2"`
+			}
+			var d data
+			Expect(res.Scan(&d)).NotTo(HaveOccurred())
+			Expect(d).To(Equal(data{Key1: "hello1", Key2: 123}))
+		})
+
 		It("should MSetNX", func() {
 			mSetNX := client.MSetNX(ctx, "key1", "hello1", "key2", "hello2")
 			Expect(mSetNX.Err()).NotTo(HaveOccurred())
@@ -1130,6 +1196,263 @@ var _ = Describe("Commands", func() {
 			mSetNX = client.MSetNX(ctx, "key2", "hello1", "key3", "hello2")
 			Expect(mSetNX.Err()).NotTo(HaveOccurred())
 			Expect(mSetNX.Val()).To(Equal(false))
+		})
+
+		It("should SetWithArgs with TTL", func() {
+			args := redis.SetArgs{
+				TTL: 500 * time.Millisecond,
+			}
+			err := client.SetArgs(ctx, "key", "hello", args).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			val, err := client.Get(ctx, "key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("hello"))
+
+			Eventually(func() error {
+				return client.Get(ctx, "key").Err()
+			}, "2s", "100ms").Should(Equal(redis.Nil))
+		})
+
+		It("should SetWithArgs with expiration date", func() {
+			expireAt := time.Now().AddDate(1, 1, 1)
+			args := redis.SetArgs{
+				ExpireAt: expireAt,
+			}
+			err := client.SetArgs(ctx, "key", "hello", args).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			val, err := client.Get(ctx, "key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("hello"))
+
+			// check the key has an expiration date
+			// (so a TTL value different of -1)
+			ttl := client.TTL(ctx, "key")
+			Expect(ttl.Err()).NotTo(HaveOccurred())
+			Expect(ttl.Val()).ToNot(Equal(-1))
+		})
+
+		It("should SetWithArgs with negative expiration date", func() {
+			args := redis.SetArgs{
+				ExpireAt: time.Now().AddDate(-3, 1, 1),
+			}
+			// redis accepts a timestamp less than the current date
+			// but returns nil when trying to get the key
+			err := client.SetArgs(ctx, "key", "hello", args).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			val, err := client.Get(ctx, "key").Result()
+			Expect(err).To(Equal(redis.Nil))
+			Expect(val).To(Equal(""))
+		})
+
+		It("should SetWithArgs with keepttl", func() {
+			// Set with ttl
+			argsWithTTL := redis.SetArgs{
+				TTL: 5 * time.Second,
+			}
+			set := client.SetArgs(ctx, "key", "hello", argsWithTTL)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Result()).To(Equal("OK"))
+
+			// Set with keepttl
+			argsWithKeepTTL := redis.SetArgs{
+				KeepTTL: true,
+			}
+			set = client.SetArgs(ctx, "key", "hello", argsWithKeepTTL)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Result()).To(Equal("OK"))
+
+			ttl := client.TTL(ctx, "key")
+			Expect(ttl.Err()).NotTo(HaveOccurred())
+			// set keepttl will Retain the ttl associated with the key
+			Expect(ttl.Val().Nanoseconds()).NotTo(Equal(-1))
+		})
+
+		It("should SetWithArgs with NX mode and key exists", func() {
+			err := client.Set(ctx, "key", "hello", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			args := redis.SetArgs{
+				Mode: "nx",
+			}
+			val, err := client.SetArgs(ctx, "key", "hello", args).Result()
+			Expect(err).To(Equal(redis.Nil))
+			Expect(val).To(Equal(""))
+		})
+
+		It("should SetWithArgs with NX mode and key does not exist", func() {
+			args := redis.SetArgs{
+				Mode: "nx",
+			}
+			val, err := client.SetArgs(ctx, "key", "hello", args).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("OK"))
+		})
+
+		It("should SetWithArgs with NX mode and GET option", func() {
+			args := redis.SetArgs{
+				Mode: "nx",
+				Get:  true,
+			}
+			val, err := client.SetArgs(ctx, "key", "hello", args).Result()
+			Expect(err).To(Equal(proto.RedisError("ERR syntax error")))
+			Expect(val).To(Equal(""))
+		})
+
+		It("should SetWithArgs with expiration, NX mode, and key does not exist", func() {
+			args := redis.SetArgs{
+				TTL:  500 * time.Millisecond,
+				Mode: "nx",
+			}
+			val, err := client.SetArgs(ctx, "key", "hello", args).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("OK"))
+
+			Eventually(func() error {
+				return client.Get(ctx, "key").Err()
+			}, "1s", "100ms").Should(Equal(redis.Nil))
+		})
+
+		It("should SetWithArgs with expiration, NX mode, and key exists", func() {
+			e := client.Set(ctx, "key", "hello", 0)
+			Expect(e.Err()).NotTo(HaveOccurred())
+
+			args := redis.SetArgs{
+				TTL:  500 * time.Millisecond,
+				Mode: "nx",
+			}
+			val, err := client.SetArgs(ctx, "key", "world", args).Result()
+			Expect(err).To(Equal(redis.Nil))
+			Expect(val).To(Equal(""))
+		})
+
+		It("should SetWithArgs with expiration, NX mode, and GET option", func() {
+			args := redis.SetArgs{
+				TTL:  500 * time.Millisecond,
+				Mode: "nx",
+				Get:  true,
+			}
+			val, err := client.SetArgs(ctx, "key", "hello", args).Result()
+			Expect(err).To(Equal(proto.RedisError("ERR syntax error")))
+			Expect(val).To(Equal(""))
+		})
+
+		It("should SetWithArgs with XX mode and key does not exist", func() {
+			args := redis.SetArgs{
+				Mode: "xx",
+			}
+			val, err := client.SetArgs(ctx, "key", "world", args).Result()
+			Expect(err).To(Equal(redis.Nil))
+			Expect(val).To(Equal(""))
+		})
+
+		It("should SetWithArgs with XX mode and key exists", func() {
+			e := client.Set(ctx, "key", "hello", 0).Err()
+			Expect(e).NotTo(HaveOccurred())
+
+			args := redis.SetArgs{
+				Mode: "xx",
+			}
+			val, err := client.SetArgs(ctx, "key", "world", args).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("OK"))
+		})
+
+		It("should SetWithArgs with XX mode and GET option, and key exists", func() {
+			e := client.Set(ctx, "key", "hello", 0).Err()
+			Expect(e).NotTo(HaveOccurred())
+
+			args := redis.SetArgs{
+				Mode: "xx",
+				Get:  true,
+			}
+			val, err := client.SetArgs(ctx, "key", "world", args).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("hello"))
+		})
+
+		It("should SetWithArgs with XX mode and GET option, and key does not exist", func() {
+			args := redis.SetArgs{
+				Mode: "xx",
+				Get:  true,
+			}
+
+			val, err := client.SetArgs(ctx, "key", "world", args).Result()
+			Expect(err).To(Equal(redis.Nil))
+			Expect(val).To(Equal(""))
+		})
+
+		It("should SetWithArgs with expiration, XX mode, GET option, and key does not exist", func() {
+			args := redis.SetArgs{
+				TTL:  500 * time.Millisecond,
+				Mode: "xx",
+				Get:  true,
+			}
+
+			val, err := client.SetArgs(ctx, "key", "world", args).Result()
+			Expect(err).To(Equal(redis.Nil))
+			Expect(val).To(Equal(""))
+		})
+
+		It("should SetWithArgs with expiration, XX mode, GET option, and key exists", func() {
+			e := client.Set(ctx, "key", "hello", 0)
+			Expect(e.Err()).NotTo(HaveOccurred())
+
+			args := redis.SetArgs{
+				TTL:  500 * time.Millisecond,
+				Mode: "xx",
+				Get:  true,
+			}
+
+			val, err := client.SetArgs(ctx, "key", "world", args).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("hello"))
+
+			Eventually(func() error {
+				return client.Get(ctx, "key").Err()
+			}, "1s", "100ms").Should(Equal(redis.Nil))
+		})
+
+		It("should SetWithArgs with Get and key does not exist yet", func() {
+			args := redis.SetArgs{
+				Get: true,
+			}
+
+			val, err := client.SetArgs(ctx, "key", "hello", args).Result()
+			Expect(err).To(Equal(redis.Nil))
+			Expect(val).To(Equal(""))
+		})
+
+		It("should SetWithArgs with Get and key exists", func() {
+			e := client.Set(ctx, "key", "hello", 0)
+			Expect(e.Err()).NotTo(HaveOccurred())
+
+			args := redis.SetArgs{
+				Get: true,
+			}
+
+			val, err := client.SetArgs(ctx, "key", "world", args).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("hello"))
+		})
+
+		It("should Pipelined SetArgs with Get and key exists", func() {
+			e := client.Set(ctx, "key", "hello", 0)
+			Expect(e.Err()).NotTo(HaveOccurred())
+
+			args := redis.SetArgs{
+				Get: true,
+			}
+
+			pipe := client.Pipeline()
+			setArgs := pipe.SetArgs(ctx, "key", "world", args)
+			_, err := pipe.Exec(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(setArgs.Err()).NotTo(HaveOccurred())
+			Expect(setArgs.Val()).To(Equal("hello"))
 		})
 
 		It("should Set with expiration", func() {
@@ -1141,13 +1464,13 @@ var _ = Describe("Commands", func() {
 			Expect(val).To(Equal("hello"))
 
 			Eventually(func() error {
-				return client.Get(ctx, "foo").Err()
+				return client.Get(ctx, "key").Err()
 			}, "1s", "100ms").Should(Equal(redis.Nil))
 		})
 
 		It("should Set with keepttl", func() {
 			// set with ttl
-			set := client.Set(ctx, "key", "hello", 5 * time.Second)
+			set := client.Set(ctx, "key", "hello", 5*time.Second)
 			Expect(set.Err()).NotTo(HaveOccurred())
 			Expect(set.Val()).To(Equal("OK"))
 
@@ -1170,6 +1493,19 @@ var _ = Describe("Commands", func() {
 			get := client.Get(ctx, "key")
 			Expect(get.Err()).NotTo(HaveOccurred())
 			Expect(get.Val()).To(Equal("hello"))
+		})
+
+		It("should SetEX", func() {
+			err := client.SetEX(ctx, "key", "hello", 1*time.Second).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			val, err := client.Get(ctx, "key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("hello"))
+
+			Eventually(func() error {
+				return client.Get(ctx, "foo").Err()
+			}, "2s", "100ms").Should(Equal(redis.Nil))
 		})
 
 		It("should SetNX", func() {
@@ -1350,6 +1686,22 @@ var _ = Describe("Commands", func() {
 			Expect(m).To(Equal(map[string]string{"key1": "hello1", "key2": "hello2"}))
 		})
 
+		It("should scan", func() {
+			err := client.HMSet(ctx, "hash", "key1", "hello1", "key2", 123).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			res := client.HGetAll(ctx, "hash")
+			Expect(res.Err()).NotTo(HaveOccurred())
+
+			type data struct {
+				Key1 string `redis:"key1"`
+				Key2 int    `redis:"key2"`
+			}
+			var d data
+			Expect(res.Scan(&d)).NotTo(HaveOccurred())
+			Expect(d).To(Equal(data{Key1: "hello1", Key2: 123}))
+		})
+
 		It("should HIncrBy", func() {
 			hSet := client.HSet(ctx, "hash", "key", "5")
 			Expect(hSet.Err()).NotTo(HaveOccurred())
@@ -1479,6 +1831,26 @@ var _ = Describe("Commands", func() {
 			err = client.HVals(ctx, "hash").ScanSlice(&slice)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(slice).To(Equal([]string{"hello1", "hello2"}))
+		})
+
+		It("should HRandField", func() {
+			err := client.HSet(ctx, "hash", "key1", "hello1").Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.HSet(ctx, "hash", "key2", "hello2").Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			v := client.HRandField(ctx, "hash", 1, false)
+			Expect(v.Err()).NotTo(HaveOccurred())
+			Expect(v.Val()).To(Or(Equal([]string{"key1"}), Equal([]string{"key2"})))
+
+			v = client.HRandField(ctx, "hash", 0, false)
+			Expect(v.Err()).NotTo(HaveOccurred())
+			Expect(v.Val()).To(HaveLen(0))
+
+			var slice []string
+			err = client.HRandField(ctx, "hash", 1, true).ScanSlice(&slice)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(slice).To(Or(Equal([]string{"key1", "hello1"}), Equal([]string{"key2", "hello2"})))
 		})
 	})
 
@@ -1676,6 +2048,62 @@ var _ = Describe("Commands", func() {
 			lRange := client.LRange(ctx, "list", 0, -1)
 			Expect(lRange.Err()).NotTo(HaveOccurred())
 			Expect(lRange.Val()).To(Equal([]string{"two", "three"}))
+		})
+
+		It("should LPos", func() {
+			rPush := client.RPush(ctx, "list", "a")
+			Expect(rPush.Err()).NotTo(HaveOccurred())
+			rPush = client.RPush(ctx, "list", "b")
+			Expect(rPush.Err()).NotTo(HaveOccurred())
+			rPush = client.RPush(ctx, "list", "c")
+			Expect(rPush.Err()).NotTo(HaveOccurred())
+			rPush = client.RPush(ctx, "list", "b")
+			Expect(rPush.Err()).NotTo(HaveOccurred())
+
+			lPos := client.LPos(ctx, "list", "b", redis.LPosArgs{})
+			Expect(lPos.Err()).NotTo(HaveOccurred())
+			Expect(lPos.Val()).To(Equal(int64(1)))
+
+			lPos = client.LPos(ctx, "list", "b", redis.LPosArgs{Rank: 2})
+			Expect(lPos.Err()).NotTo(HaveOccurred())
+			Expect(lPos.Val()).To(Equal(int64(3)))
+
+			lPos = client.LPos(ctx, "list", "b", redis.LPosArgs{Rank: -2})
+			Expect(lPos.Err()).NotTo(HaveOccurred())
+			Expect(lPos.Val()).To(Equal(int64(1)))
+
+			lPos = client.LPos(ctx, "list", "b", redis.LPosArgs{Rank: 2, MaxLen: 1})
+			Expect(lPos.Err()).To(Equal(redis.Nil))
+
+			lPos = client.LPos(ctx, "list", "z", redis.LPosArgs{})
+			Expect(lPos.Err()).To(Equal(redis.Nil))
+		})
+
+		It("should LPosCount", func() {
+			rPush := client.RPush(ctx, "list", "a")
+			Expect(rPush.Err()).NotTo(HaveOccurred())
+			rPush = client.RPush(ctx, "list", "b")
+			Expect(rPush.Err()).NotTo(HaveOccurred())
+			rPush = client.RPush(ctx, "list", "c")
+			Expect(rPush.Err()).NotTo(HaveOccurred())
+			rPush = client.RPush(ctx, "list", "b")
+			Expect(rPush.Err()).NotTo(HaveOccurred())
+
+			lPos := client.LPosCount(ctx, "list", "b", 2, redis.LPosArgs{})
+			Expect(lPos.Err()).NotTo(HaveOccurred())
+			Expect(lPos.Val()).To(Equal([]int64{1, 3}))
+
+			lPos = client.LPosCount(ctx, "list", "b", 2, redis.LPosArgs{Rank: 2})
+			Expect(lPos.Err()).NotTo(HaveOccurred())
+			Expect(lPos.Val()).To(Equal([]int64{3}))
+
+			lPos = client.LPosCount(ctx, "list", "b", 1, redis.LPosArgs{Rank: 1, MaxLen: 1})
+			Expect(lPos.Err()).NotTo(HaveOccurred())
+			Expect(lPos.Val()).To(Equal([]int64{}))
+
+			lPos = client.LPosCount(ctx, "list", "b", 1, redis.LPosArgs{Rank: 1, MaxLen: 0})
+			Expect(lPos.Err()).NotTo(HaveOccurred())
+			Expect(lPos.Val()).To(Equal([]int64{1}))
 		})
 
 		It("should LPush", func() {
@@ -1888,6 +2316,28 @@ var _ = Describe("Commands", func() {
 			lRange = client.LRange(ctx, "list2", 0, -1)
 			Expect(lRange.Err()).NotTo(HaveOccurred())
 			Expect(lRange.Val()).To(Equal([]string{}))
+		})
+
+		It("should LMove", func() {
+			rPush := client.RPush(ctx, "lmove1", "ichi")
+			Expect(rPush.Err()).NotTo(HaveOccurred())
+			Expect(rPush.Val()).To(Equal(int64(1)))
+
+			rPush = client.RPush(ctx, "lmove1", "ni")
+			Expect(rPush.Err()).NotTo(HaveOccurred())
+			Expect(rPush.Val()).To(Equal(int64(2)))
+
+			rPush = client.RPush(ctx, "lmove1", "san")
+			Expect(rPush.Err()).NotTo(HaveOccurred())
+			Expect(rPush.Val()).To(Equal(int64(3)))
+
+			lMove := client.LMove(ctx, "lmove1", "lmove2", "RIGHT", "LEFT")
+			Expect(lMove.Err()).NotTo(HaveOccurred())
+			Expect(lMove.Val()).To(Equal("san"))
+
+			lRange := client.LRange(ctx, "lmove2", 0, -1)
+			Expect(lRange.Err()).NotTo(HaveOccurred())
+			Expect(lRange.Val()).To(Equal([]string{"san"}))
 		})
 	})
 
@@ -2781,6 +3231,33 @@ var _ = Describe("Commands", func() {
 			}}))
 		})
 
+		It("should ZMScore", func() {
+			zmScore := client.ZMScore(ctx, "zset", "one", "three")
+			Expect(zmScore.Err()).NotTo(HaveOccurred())
+			Expect(zmScore.Val()).To(HaveLen(2))
+			Expect(zmScore.Val()[0]).To(Equal(float64(0)))
+
+			err := client.ZAdd(ctx, "zset", &redis.Z{Score: 1, Member: "one"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd(ctx, "zset", &redis.Z{Score: 2, Member: "two"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd(ctx, "zset", &redis.Z{Score: 3, Member: "three"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			zmScore = client.ZMScore(ctx, "zset", "one", "three")
+			Expect(zmScore.Err()).NotTo(HaveOccurred())
+			Expect(zmScore.Val()).To(HaveLen(2))
+			Expect(zmScore.Val()[0]).To(Equal(float64(1)))
+
+			zmScore = client.ZMScore(ctx, "zset", "four")
+			Expect(zmScore.Err()).NotTo(HaveOccurred())
+			Expect(zmScore.Val()).To(HaveLen(1))
+
+			zmScore = client.ZMScore(ctx, "zset", "four", "one")
+			Expect(zmScore.Err()).NotTo(HaveOccurred())
+			Expect(zmScore.Val()).To(HaveLen(2))
+		})
+
 		It("should ZPopMax", func() {
 			err := client.ZAdd(ctx, "zset", &redis.Z{
 				Score:  1,
@@ -3435,6 +3912,26 @@ var _ = Describe("Commands", func() {
 				Member: "two",
 			}}))
 		})
+
+		It("should ZRandMember", func() {
+			err := client.ZAdd(ctx, "zset", &redis.Z{Score: 1, Member: "one"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+			err = client.ZAdd(ctx, "zset", &redis.Z{Score: 2, Member: "two"}).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			v := client.ZRandMember(ctx, "zset", 1, false)
+			Expect(v.Err()).NotTo(HaveOccurred())
+			Expect(v.Val()).To(Or(Equal([]string{"one"}), Equal([]string{"two"})))
+
+			v = client.ZRandMember(ctx, "zset", 0, false)
+			Expect(v.Err()).NotTo(HaveOccurred())
+			Expect(v.Val()).To(HaveLen(0))
+
+			var slice []string
+			err = client.ZRandMember(ctx, "zset", 1, true).ScanSlice(&slice)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(slice).To(Or(Equal([]string{"one", "1"}), Equal([]string{"two", "2"})))
+		})
 	})
 
 	Describe("streams", func() {
@@ -3776,6 +4273,111 @@ var _ = Describe("Commands", func() {
 				n, err := client.XAck(ctx, "stream", "group", "1-0", "2-0", "4-0").Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(n).To(Equal(int64(2)))
+			})
+		})
+
+		Describe("xinfo", func() {
+			BeforeEach(func() {
+				err := client.XGroupCreate(ctx, "stream", "group1", "0").Err()
+				Expect(err).NotTo(HaveOccurred())
+
+				res, err := client.XReadGroup(ctx, &redis.XReadGroupArgs{
+					Group:    "group1",
+					Consumer: "consumer1",
+					Streams:  []string{"stream", ">"},
+					Count:    2,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal([]redis.XStream{
+					{
+						Stream: "stream",
+						Messages: []redis.XMessage{
+							{ID: "1-0", Values: map[string]interface{}{"uno": "un"}},
+							{ID: "2-0", Values: map[string]interface{}{"dos": "deux"}},
+						},
+					},
+				}))
+
+				res, err = client.XReadGroup(ctx, &redis.XReadGroupArgs{
+					Group:    "group1",
+					Consumer: "consumer2",
+					Streams:  []string{"stream", ">"},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal([]redis.XStream{
+					{
+						Stream: "stream",
+						Messages: []redis.XMessage{
+							{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
+						},
+					},
+				}))
+
+				err = client.XGroupCreate(ctx, "stream", "group2", "1-0").Err()
+				Expect(err).NotTo(HaveOccurred())
+
+				res, err = client.XReadGroup(ctx, &redis.XReadGroupArgs{
+					Group:    "group2",
+					Consumer: "consumer1",
+					Streams:  []string{"stream", ">"},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal([]redis.XStream{
+					{
+						Stream: "stream",
+						Messages: []redis.XMessage{
+							{ID: "2-0", Values: map[string]interface{}{"dos": "deux"}},
+							{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
+						},
+					},
+				}))
+			})
+
+			AfterEach(func() {
+				n, err := client.XGroupDestroy(ctx, "stream", "group1").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(n).To(Equal(int64(1)))
+				n, err = client.XGroupDestroy(ctx, "stream", "group2").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(n).To(Equal(int64(1)))
+			})
+
+			It("should XINFO STREAM", func() {
+				res, err := client.XInfoStream(ctx, "stream").Result()
+				Expect(err).NotTo(HaveOccurred())
+				res.RadixTreeKeys = 0
+				res.RadixTreeNodes = 0
+
+				Expect(res).To(Equal(&redis.XInfoStream{
+					Length:          3,
+					RadixTreeKeys:   0,
+					RadixTreeNodes:  0,
+					Groups:          2,
+					LastGeneratedID: "3-0",
+					FirstEntry:      redis.XMessage{ID: "1-0", Values: map[string]interface{}{"uno": "un"}},
+					LastEntry:       redis.XMessage{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
+				}))
+			})
+
+			It("should XINFO GROUPS", func() {
+				res, err := client.XInfoGroups(ctx, "stream").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal([]redis.XInfoGroup{
+					{Name: "group1", Consumers: 2, Pending: 3, LastDeliveredID: "3-0"},
+					{Name: "group2", Consumers: 1, Pending: 2, LastDeliveredID: "3-0"},
+				}))
+			})
+
+			It("should XINFO CONSUMERS", func() {
+				res, err := client.XInfoConsumers(ctx, "stream", "group1").Result()
+				Expect(err).NotTo(HaveOccurred())
+				for i := range res {
+					res[i].Idle = 0
+				}
+				Expect(res).To(Equal([]redis.XInfoConsumer{
+					{Name: "consumer1", Pending: 2, Idle: 0},
+					{Name: "consumer2", Pending: 1, Idle: 0},
+				}))
 			})
 		})
 	})

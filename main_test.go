@@ -175,8 +175,8 @@ func redisRingOptions() *redis.RingOptions {
 func performAsync(n int, cbs ...func(int)) *sync.WaitGroup {
 	var wg sync.WaitGroup
 	for _, cb := range cbs {
+		wg.Add(n)
 		for i := 0; i < n; i++ {
-			wg.Add(1)
 			go func(cb func(int), i int) {
 				defer GinkgoRecover()
 				defer wg.Done()
@@ -344,9 +344,11 @@ func startSentinel(port, masterName, masterPort string) (*redisProcess, error) {
 		return nil, err
 	}
 
+	// set down-after-milliseconds=2000
+	// link: https://github.com/redis/redis/issues/8607
 	for _, cmd := range []*redis.StatusCmd{
 		redis.NewStatusCmd(ctx, "SENTINEL", "MONITOR", masterName, "127.0.0.1", masterPort, "2"),
-		redis.NewStatusCmd(ctx, "SENTINEL", "SET", masterName, "down-after-milliseconds", "500"),
+		redis.NewStatusCmd(ctx, "SENTINEL", "SET", masterName, "down-after-milliseconds", "2000"),
 		redis.NewStatusCmd(ctx, "SENTINEL", "SET", masterName, "failover-timeout", "1000"),
 		redis.NewStatusCmd(ctx, "SENTINEL", "SET", masterName, "parallel-syncs", "1"),
 	} {
