@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-redis/redis/v8"
-
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
+
+	"github.com/go-redis/redis/v9"
 )
 
 var _ = Describe("races", func() {
@@ -290,13 +290,6 @@ var _ = Describe("races", func() {
 		Expect(atomic.LoadUint32(&received)).To(Equal(uint32(C * N)))
 	})
 
-	It("should WithContext", func() {
-		perform(C, func(_ int) {
-			err := client.WithContext(ctx).Ping(ctx).Err()
-			Expect(err).NotTo(HaveOccurred())
-		})
-	})
-
 	It("should abort on context timeout", func() {
 		opt := redisClusterOptions()
 		client := cluster.newClusterClient(ctx, opt)
@@ -372,6 +365,18 @@ var _ = Describe("cluster races", func() {
 		val, err := client.Get(ctx, key).Int64()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(Equal(int64(C * N)))
+	})
+
+	It("write cmd data-race", func() {
+		pubsub := client.Subscribe(ctx)
+		defer pubsub.Close()
+
+		pubsub.Channel(redis.WithChannelHealthCheckInterval(time.Millisecond))
+		for i := 0; i < 100; i++ {
+			key := fmt.Sprintf("channel_%d", i)
+			pubsub.Subscribe(ctx, key)
+			pubsub.Unsubscribe(ctx, key)
+		}
 	})
 })
 

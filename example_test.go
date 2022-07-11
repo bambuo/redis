@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-redis/redis/v8"
+	"github.com/go-redis/redis/v9"
 )
 
 var (
@@ -39,13 +39,14 @@ func ExampleNewClient() {
 }
 
 func ExampleParseURL() {
-	opt, err := redis.ParseURL("redis://:qwerty@localhost:6379/1")
+	opt, err := redis.ParseURL("redis://:qwerty@localhost:6379/1?dial_timeout=5s")
 	if err != nil {
 		panic(err)
 	}
 	fmt.Println("addr is", opt.Addr)
 	fmt.Println("db is", opt.DB)
 	fmt.Println("password is", opt.Password)
+	fmt.Println("dial timeout is", opt.DialTimeout)
 
 	// Create client as usually.
 	_ = redis.NewClient(opt)
@@ -53,6 +54,7 @@ func ExampleParseURL() {
 	// Output: addr is localhost:6379
 	// db is 1
 	// password is qwerty
+	// dial timeout is 5s
 }
 
 func ExampleNewFailoverClient() {
@@ -188,8 +190,8 @@ func ExampleClient_Set() {
 	}
 }
 
-func ExampleClient_SetEX() {
-	err := rdb.SetEX(ctx, "key", "value", time.Hour).Err()
+func ExampleClient_SetEx() {
+	err := rdb.SetEx(ctx, "key", "value", time.Hour).Err()
 	if err != nil {
 		panic(err)
 	}
@@ -276,9 +278,9 @@ func ExampleClient_ScanType() {
 	// Output: found 33 keys
 }
 
-// ExampleStringStringMapCmd_Scan shows how to scan the results of a map fetch
+// ExampleMapStringStringCmd_Scan shows how to scan the results of a map fetch
 // into a struct.
-func ExampleStringStringMapCmd_Scan() {
+func ExampleMapStringStringCmd_Scan() {
 	rdb.FlushDB(ctx)
 	err := rdb.HMSet(ctx, "map",
 		"name", "hello",
@@ -417,7 +419,7 @@ func ExampleClient_Watch() {
 			// Actual opperation (local in optimistic lock).
 			n++
 
-			// Operation is commited only if the watched keys remain unchanged.
+			// Operation is committed only if the watched keys remain unchanged.
 			_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 				pipe.Set(ctx, key, n, 0)
 				return nil
@@ -615,7 +617,7 @@ func ExampleClient_SlowLogGet() {
 
 	old := rdb.ConfigGet(ctx, key).Val()
 	rdb.ConfigSet(ctx, key, "0")
-	defer rdb.ConfigSet(ctx, key, old[1].(string))
+	defer rdb.ConfigSet(ctx, key, old[key])
 
 	if err := rdb.Do(ctx, "slowlog", "reset").Err(); err != nil {
 		panic(err)

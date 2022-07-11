@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-redis/redis/v8"
-
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
+
+	"github.com/go-redis/redis/v9"
 )
 
 const (
@@ -283,8 +283,9 @@ func (p *redisProcess) Close() error {
 }
 
 var (
-	redisServerBin, _  = filepath.Abs(filepath.Join("testdata", "redis", "src", "redis-server"))
-	redisServerConf, _ = filepath.Abs(filepath.Join("testdata", "redis", "redis.conf"))
+	redisServerBin, _    = filepath.Abs(filepath.Join("testdata", "redis", "src", "redis-server"))
+	redisServerConf, _   = filepath.Abs(filepath.Join("testdata", "redis", "redis.conf"))
+	redisSentinelConf, _ = filepath.Abs(filepath.Join("testdata", "redis", "sentinel.conf"))
 )
 
 func redisDir(port string) (string, error) {
@@ -295,7 +296,7 @@ func redisDir(port string) (string, error) {
 	if err := os.RemoveAll(dir); err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(dir, 0775); err != nil {
+	if err := os.MkdirAll(dir, 0o775); err != nil {
 		return "", err
 	}
 	return dir, nil
@@ -306,7 +307,8 @@ func startRedis(port string, args ...string) (*redisProcess, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err = exec.Command("cp", "-f", redisServerConf, dir).Run(); err != nil {
+
+	if err := exec.Command("cp", "-f", redisServerConf, dir).Run(); err != nil {
 		return nil, err
 	}
 
@@ -324,7 +326,7 @@ func startRedis(port string, args ...string) (*redisProcess, error) {
 
 	p := &redisProcess{process, client}
 	registerProcess(port, p)
-	return p, err
+	return p, nil
 }
 
 func startSentinel(port, masterName, masterPort string) (*redisProcess, error) {
@@ -333,7 +335,12 @@ func startSentinel(port, masterName, masterPort string) (*redisProcess, error) {
 		return nil, err
 	}
 
-	process, err := execCmd(redisServerBin, os.DevNull, "--sentinel", "--port", port, "--dir", dir)
+	sentinelConf := filepath.Join(dir, "sentinel.conf")
+	if err := os.WriteFile(sentinelConf, nil, 0o644); err != nil {
+		return nil, err
+	}
+
+	process, err := execCmd(redisServerBin, sentinelConf, "--sentinel", "--port", port, "--dir", dir)
 	if err != nil {
 		return nil, err
 	}
@@ -355,7 +362,7 @@ func startSentinel(port, masterName, masterPort string) (*redisProcess, error) {
 		client.Process(ctx, cmd)
 		if err := cmd.Err(); err != nil {
 			process.Kill()
-			return nil, err
+			return nil, fmt.Errorf("%s failed: %w", cmd, err)
 		}
 	}
 

@@ -7,8 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/go-redis/redis/v8/internal"
-	"github.com/go-redis/redis/v8/internal/proto"
+	"github.com/go-redis/redis/v9/internal/proto"
 )
 
 var noDeadline = time.Time{}
@@ -65,8 +64,10 @@ func (cn *Conn) RemoteAddr() net.Addr {
 }
 
 func (cn *Conn) WithReader(ctx context.Context, timeout time.Duration, fn func(rd *proto.Reader) error) error {
-	if err := cn.netConn.SetReadDeadline(cn.deadline(ctx, timeout)); err != nil {
-		return err
+	if timeout != 0 {
+		if err := cn.netConn.SetReadDeadline(cn.deadline(ctx, timeout)); err != nil {
+			return err
+		}
 	}
 	return fn(cn.rd)
 }
@@ -74,8 +75,10 @@ func (cn *Conn) WithReader(ctx context.Context, timeout time.Duration, fn func(r
 func (cn *Conn) WithWriter(
 	ctx context.Context, timeout time.Duration, fn func(wr *proto.Writer) error,
 ) error {
-	if err := cn.netConn.SetWriteDeadline(cn.deadline(ctx, timeout)); err != nil {
-		return err
+	if timeout != 0 {
+		if err := cn.netConn.SetWriteDeadline(cn.deadline(ctx, timeout)); err != nil {
+			return err
+		}
 	}
 
 	if cn.bw.Buffered() > 0 {
@@ -86,13 +89,7 @@ func (cn *Conn) WithWriter(
 		return err
 	}
 
-	if err := cn.bw.Flush(); err != nil {
-		return err
-	}
-
-	internal.WritesCounter.Add(ctx, 1)
-
-	return nil
+	return cn.bw.Flush()
 }
 
 func (cn *Conn) Close() error {

@@ -9,10 +9,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-redis/redis/v8"
-
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
+
+	"github.com/go-redis/redis/v9"
 )
 
 var _ = Describe("Redis Ring", func() {
@@ -123,7 +123,6 @@ var _ = Describe("Redis Ring", func() {
 			cmds, err := pipe.Exec(ctx)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cmds).To(HaveLen(100))
-			Expect(pipe.Close()).NotTo(HaveOccurred())
 
 			for _, cmd := range cmds {
 				Expect(cmd.Err()).NotTo(HaveOccurred())
@@ -177,6 +176,7 @@ var _ = Describe("Redis Ring", func() {
 		It("can be initialized with a new client callback", func() {
 			opts := redisRingOptions()
 			opts.NewClient = func(name string, opt *redis.Options) *redis.Client {
+				opt.Username = "username1"
 				opt.Password = "password1"
 				return redis.NewClient(opt)
 			}
@@ -184,14 +184,14 @@ var _ = Describe("Redis Ring", func() {
 
 			err := ring.Ping(ctx).Err()
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("ERR AUTH"))
+			Expect(err.Error()).To(ContainSubstring("WRONGPASS"))
 		})
 	})
 
 	Describe("Process hook", func() {
 		BeforeEach(func() {
-			//the health check leads to data race for variable "stack []string".
-			//here, the health check time is set to 72 hours to avoid health check
+			// the health check leads to data race for variable "stack []string".
+			// here, the health check time is set to 72 hours to avoid health check
 			opt := redisRingOptions()
 			opt.HeartbeatFrequency = 72 * time.Hour
 			ring = redis.NewRing(opt)

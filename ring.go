@@ -12,11 +12,12 @@ import (
 	"time"
 
 	"github.com/cespare/xxhash/v2"
-	"github.com/dgryski/go-rendezvous"
-	"github.com/go-redis/redis/v8/internal"
-	"github.com/go-redis/redis/v8/internal/hashtag"
-	"github.com/go-redis/redis/v8/internal/pool"
-	"github.com/go-redis/redis/v8/internal/rand"
+	rendezvous "github.com/dgryski/go-rendezvous" //nolint
+
+	"github.com/go-redis/redis/v9/internal"
+	"github.com/go-redis/redis/v9/internal/hashtag"
+	"github.com/go-redis/redis/v9/internal/pool"
+	"github.com/go-redis/redis/v9/internal/rand"
 )
 
 var errRingShardsDown = errors.New("redis: all ring shards are down")
@@ -78,6 +79,9 @@ type RingOptions struct {
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
 
+	// PoolFIFO uses FIFO mode for each node connection pool GET/PUT (default LIFO).
+	PoolFIFO bool
+
 	PoolSize           int
 	MinIdleConns       int
 	MaxConnAge         time.Duration
@@ -138,6 +142,7 @@ func (opt *RingOptions) clientOptions() *Options {
 		ReadTimeout:  opt.ReadTimeout,
 		WriteTimeout: opt.WriteTimeout,
 
+		PoolFIFO:           opt.PoolFIFO,
 		PoolSize:           opt.PoolSize,
 		MinIdleConns:       opt.MinIdleConns,
 		MaxConnAge:         opt.MaxConnAge,
@@ -304,7 +309,7 @@ func (c *ringShards) Random() (*ringShard, error) {
 	return c.GetByKey(strconv.Itoa(rand.Int()))
 }
 
-// heartbeat monitors state of each shard in the ring.
+// Heartbeat monitors state of each shard in the ring.
 func (c *ringShards) Heartbeat(frequency time.Duration) {
 	ticker := time.NewTicker(frequency)
 	defer ticker.Stop()
@@ -425,21 +430,6 @@ func NewRing(opt *RingOptions) *Ring {
 	go ring.shards.Heartbeat(opt.HeartbeatFrequency)
 
 	return &ring
-}
-
-func (c *Ring) Context() context.Context {
-	return c.ctx
-}
-
-func (c *Ring) WithContext(ctx context.Context) *Ring {
-	if ctx == nil {
-		panic("nil context")
-	}
-	clone := *c
-	clone.cmdable = clone.Process
-	clone.hooks.lock()
-	clone.ctx = ctx
-	return &clone
 }
 
 // Do creates a Cmd from the args and processes the cmd.
@@ -571,7 +561,7 @@ func (c *Ring) cmdInfo(ctx context.Context, name string) *CommandInfo {
 	}
 	info := cmdsInfo[name]
 	if info == nil {
-		internal.Logger.Printf(c.Context(), "info for cmd=%s not found", name)
+		internal.Logger.Printf(ctx, "info for cmd=%s not found", name)
 	}
 	return info
 }
@@ -614,7 +604,6 @@ func (c *Ring) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder
 
 func (c *Ring) Pipeline() Pipeliner {
 	pipe := Pipeline{
-		ctx:  c.ctx,
 		exec: c.processPipeline,
 	}
 	pipe.init()
@@ -633,7 +622,6 @@ func (c *Ring) TxPipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmd
 
 func (c *Ring) TxPipeline() Pipeliner {
 	pipe := Pipeline{
-		ctx:  c.ctx,
 		exec: c.processTxPipeline,
 	}
 	pipe.init()

@@ -3,9 +3,10 @@ package rediscensus
 import (
 	"context"
 
-	"github.com/go-redis/redis/extra/rediscmd/v8"
-	"github.com/go-redis/redis/v8"
 	"go.opencensus.io/trace"
+
+	"github.com/go-redis/redis/extra/rediscmd/v9"
+	"github.com/go-redis/redis/v9"
 )
 
 type TracingHook struct{}
