@@ -155,7 +155,7 @@ func ExampleClient() {
 }
 
 func ExampleConn() {
-	conn := rdb.Conn(context.Background())
+	conn := rdb.Conn()
 
 	err := conn.ClientSetName(ctx, "foobar").Err()
 	if err != nil {
@@ -276,6 +276,35 @@ func ExampleClient_ScanType() {
 
 	fmt.Printf("found %d keys\n", n)
 	// Output: found 33 keys
+}
+
+// ExampleClient_ScanType_hashType uses the keyType "hash".
+func ExampleClient_ScanType_hashType() {
+	rdb.FlushDB(ctx)
+	for i := 0; i < 33; i++ {
+		err := rdb.HSet(context.TODO(), fmt.Sprintf("key%d", i), "value", "foo").Err()
+		if err != nil {
+			panic(err)
+		}
+	}
+
+	var allKeys []string
+	var cursor uint64
+	var err error
+
+	for {
+		var keysFromScan []string
+		keysFromScan, cursor, err = rdb.ScanType(context.TODO(), cursor, "key*", 10, "hash").Result()
+		if err != nil {
+			panic(err)
+		}
+		allKeys = append(allKeys, keysFromScan...)
+		if cursor == 0 {
+			break
+		}
+	}
+	fmt.Printf("%d keys ready for use", len(allKeys))
+	// Output: 33 keys ready for use
 }
 
 // ExampleMapStringStringCmd_Scan shows how to scan the results of a map fetch
@@ -404,7 +433,7 @@ func ExampleClient_TxPipeline() {
 }
 
 func ExampleClient_Watch() {
-	const maxRetries = 1000
+	const maxRetries = 10000
 
 	// Increment transactionally increments key using GET and SET commands.
 	increment := func(key string) error {

@@ -14,6 +14,15 @@ import (
 	"github.com/go-redis/redis/v9/internal/proto"
 )
 
+type TimeValue struct {
+	time.Time
+}
+
+func (t *TimeValue) ScanRedis(s string) (err error) {
+	t.Time, err = time.Parse(time.RFC3339Nano, s)
+	return
+}
+
 var _ = Describe("Commands", func() {
 	ctx := context.TODO()
 	var client *redis.Client
@@ -225,6 +234,14 @@ var _ = Describe("Commands", func() {
 			Expect(info.Err()).NotTo(HaveOccurred())
 			Expect(info.Val()).NotTo(Equal(""))
 			Expect(info.Val()).To(ContainSubstring(`used_cpu_sys`))
+		})
+
+		It("should Info cpu and memory", func() {
+			info := client.Info(ctx, "cpu", "memory")
+			Expect(info.Err()).NotTo(HaveOccurred())
+			Expect(info.Val()).NotTo(Equal(""))
+			Expect(info.Val()).To(ContainSubstring(`used_cpu_sys`))
+			Expect(info.Val()).To(ContainSubstring(`memory`))
 		})
 
 		It("should LastSave", func() {
@@ -1184,19 +1201,28 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should scan Mget", func() {
-			err := client.MSet(ctx, "key1", "hello1", "key2", 123).Err()
+			now := time.Now()
+
+			err := client.MSet(ctx, "key1", "hello1", "key2", 123, "time", now.Format(time.RFC3339Nano)).Err()
 			Expect(err).NotTo(HaveOccurred())
 
-			res := client.MGet(ctx, "key1", "key2", "_")
+			res := client.MGet(ctx, "key1", "key2", "_", "time")
 			Expect(res.Err()).NotTo(HaveOccurred())
 
 			type data struct {
-				Key1 string `redis:"key1"`
-				Key2 int    `redis:"key2"`
+				Key1 string    `redis:"key1"`
+				Key2 int       `redis:"key2"`
+				Time TimeValue `redis:"time"`
 			}
 			var d data
 			Expect(res.Scan(&d)).NotTo(HaveOccurred())
-			Expect(d).To(Equal(data{Key1: "hello1", Key2: 123}))
+			Expect(d.Time.UnixNano()).To(Equal(now.UnixNano()))
+			d.Time.Time = time.Time{}
+			Expect(d).To(Equal(data{
+				Key1: "hello1",
+				Key2: 123,
+				Time: TimeValue{Time: time.Time{}},
+			}))
 		})
 
 		It("should MSetNX", func() {
@@ -1724,19 +1750,28 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should scan", func() {
-			err := client.HMSet(ctx, "hash", "key1", "hello1", "key2", 123).Err()
+			now := time.Now()
+
+			err := client.HMSet(ctx, "hash", "key1", "hello1", "key2", 123, "time", now.Format(time.RFC3339Nano)).Err()
 			Expect(err).NotTo(HaveOccurred())
 
 			res := client.HGetAll(ctx, "hash")
 			Expect(res.Err()).NotTo(HaveOccurred())
 
 			type data struct {
-				Key1 string `redis:"key1"`
-				Key2 int    `redis:"key2"`
+				Key1 string    `redis:"key1"`
+				Key2 int       `redis:"key2"`
+				Time TimeValue `redis:"time"`
 			}
 			var d data
 			Expect(res.Scan(&d)).NotTo(HaveOccurred())
-			Expect(d).To(Equal(data{Key1: "hello1", Key2: 123}))
+			Expect(d.Time.UnixNano()).To(Equal(now.UnixNano()))
+			d.Time.Time = time.Time{}
+			Expect(d).To(Equal(data{
+				Key1: "hello1",
+				Key2: 123,
+				Time: TimeValue{Time: time.Time{}},
+			}))
 		})
 
 		It("should HIncrBy", func() {
@@ -2541,6 +2576,36 @@ var _ = Describe("Commands", func() {
 			sInter := client.SInter(ctx, "set1", "set2")
 			Expect(sInter.Err()).NotTo(HaveOccurred())
 			Expect(sInter.Val()).To(Equal([]string{"c"}))
+		})
+
+		It("should SInterCard", func() {
+			sAdd := client.SAdd(ctx, "set1", "a")
+			Expect(sAdd.Err()).NotTo(HaveOccurred())
+			sAdd = client.SAdd(ctx, "set1", "b")
+			Expect(sAdd.Err()).NotTo(HaveOccurred())
+			sAdd = client.SAdd(ctx, "set1", "c")
+			Expect(sAdd.Err()).NotTo(HaveOccurred())
+
+			sAdd = client.SAdd(ctx, "set2", "b")
+			Expect(sAdd.Err()).NotTo(HaveOccurred())
+			sAdd = client.SAdd(ctx, "set2", "c")
+			Expect(sAdd.Err()).NotTo(HaveOccurred())
+			sAdd = client.SAdd(ctx, "set2", "d")
+			Expect(sAdd.Err()).NotTo(HaveOccurred())
+			sAdd = client.SAdd(ctx, "set2", "e")
+			Expect(sAdd.Err()).NotTo(HaveOccurred())
+			//limit 0 means no limit,see https://redis.io/commands/sintercard/ for more details
+			sInterCard := client.SInterCard(ctx, 0, "set1", "set2")
+			Expect(sInterCard.Err()).NotTo(HaveOccurred())
+			Expect(sInterCard.Val()).To(Equal(int64(2)))
+
+			sInterCard = client.SInterCard(ctx, 1, "set1", "set2")
+			Expect(sInterCard.Err()).NotTo(HaveOccurred())
+			Expect(sInterCard.Val()).To(Equal(int64(1)))
+
+			sInterCard = client.SInterCard(ctx, 3, "set1", "set2")
+			Expect(sInterCard.Err()).NotTo(HaveOccurred())
+			Expect(sInterCard.Val()).To(Equal(int64(2)))
 		})
 
 		It("should SInterStore", func() {
@@ -4373,9 +4438,6 @@ var _ = Describe("Commands", func() {
 			Expect(id).To(Equal("3-0"))
 		})
 
-		// TODO XTrimMaxLenApprox/XTrimMinIDApprox There is a bug in the limit parameter.
-		// TODO Don't test it for now.
-		// TODO link: https://github.com/redis/redis/issues/9046
 		It("should XTrimMaxLen", func() {
 			n, err := client.XTrimMaxLen(ctx, "stream", 0).Result()
 			Expect(err).NotTo(HaveOccurred())
@@ -4417,9 +4479,6 @@ var _ = Describe("Commands", func() {
 			}))
 		})
 
-		// TODO XAdd There is a bug in the limit parameter.
-		// TODO Don't test it for now.
-		// TODO link: https://github.com/redis/redis/issues/9046
 		It("should XAdd with MaxLen", func() {
 			id, err := client.XAdd(ctx, &redis.XAddArgs{
 				Stream: "stream",
@@ -5404,6 +5463,29 @@ var _ = Describe("Commands", func() {
 
 		It("returns all values after an error", func() {
 			vals, err := client.Eval(
+				ctx,
+				`return {12, {err="error"}, "abc"}`,
+				nil,
+			).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(vals).To(Equal([]interface{}{int64(12), proto.RedisError("error"), "abc"}))
+		})
+	})
+
+	Describe("EvalRO", func() {
+		It("returns keys and values", func() {
+			vals, err := client.EvalRO(
+				ctx,
+				"return {KEYS[1],ARGV[1]}",
+				[]string{"key"},
+				"hello",
+			).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(vals).To(Equal([]interface{}{"key", "hello"}))
+		})
+
+		It("returns all values after an error", func() {
+			vals, err := client.EvalRO(
 				ctx,
 				`return {12, {err="error"}, "abc"}`,
 				nil,

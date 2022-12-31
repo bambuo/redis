@@ -1,8 +1,6 @@
 package redis_test
 
 import (
-	"context"
-	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -124,16 +122,16 @@ func redisOptions() *redis.Options {
 		Addr: redisAddr,
 		DB:   15,
 
-		DialTimeout:  10 * time.Second,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		DialTimeout:           10 * time.Second,
+		ReadTimeout:           30 * time.Second,
+		WriteTimeout:          30 * time.Second,
+		ContextTimeoutEnabled: true,
 
 		MaxRetries: -1,
 
-		PoolSize:           10,
-		PoolTimeout:        30 * time.Second,
-		IdleTimeout:        time.Minute,
-		IdleCheckFrequency: 100 * time.Millisecond,
+		PoolSize:        10,
+		PoolTimeout:     30 * time.Second,
+		ConnMaxIdleTime: time.Minute,
 	}
 }
 
@@ -145,10 +143,9 @@ func redisClusterOptions() *redis.ClusterOptions {
 
 		MaxRedirects: 8,
 
-		PoolSize:           10,
-		PoolTimeout:        30 * time.Second,
-		IdleTimeout:        time.Minute,
-		IdleCheckFrequency: 100 * time.Millisecond,
+		PoolSize:        10,
+		PoolTimeout:     30 * time.Second,
+		ConnMaxIdleTime: time.Minute,
 	}
 }
 
@@ -165,10 +162,9 @@ func redisRingOptions() *redis.RingOptions {
 
 		MaxRetries: -1,
 
-		PoolSize:           10,
-		PoolTimeout:        30 * time.Second,
-		IdleTimeout:        time.Minute,
-		IdleCheckFrequency: 100 * time.Millisecond,
+		PoolSize:        10,
+		PoolTimeout:     30 * time.Second,
+		ConnMaxIdleTime: time.Minute,
 	}
 }
 
@@ -272,7 +268,7 @@ func (p *redisProcess) Close() error {
 		if err := p.Client.Ping(ctx).Err(); err != nil {
 			return nil
 		}
-		return errors.New("client is not shutdown")
+		return fmt.Errorf("client %s is not shutdown", p.Options().Addr)
 	}, 10*time.Second)
 	if err != nil {
 		return err
@@ -419,37 +415,28 @@ func (cn *badConn) Write([]byte) (int, error) {
 //------------------------------------------------------------------------------
 
 type hook struct {
-	beforeProcess func(ctx context.Context, cmd redis.Cmder) (context.Context, error)
-	afterProcess  func(ctx context.Context, cmd redis.Cmder) error
-
-	beforeProcessPipeline func(ctx context.Context, cmds []redis.Cmder) (context.Context, error)
-	afterProcessPipeline  func(ctx context.Context, cmds []redis.Cmder) error
+	dialHook            func(hook redis.DialHook) redis.DialHook
+	processHook         func(hook redis.ProcessHook) redis.ProcessHook
+	processPipelineHook func(hook redis.ProcessPipelineHook) redis.ProcessPipelineHook
 }
 
-func (h *hook) BeforeProcess(ctx context.Context, cmd redis.Cmder) (context.Context, error) {
-	if h.beforeProcess != nil {
-		return h.beforeProcess(ctx, cmd)
+func (h *hook) DialHook(hook redis.DialHook) redis.DialHook {
+	if h.dialHook != nil {
+		return h.dialHook(hook)
 	}
-	return ctx, nil
+	return hook
 }
 
-func (h *hook) AfterProcess(ctx context.Context, cmd redis.Cmder) error {
-	if h.afterProcess != nil {
-		return h.afterProcess(ctx, cmd)
+func (h *hook) ProcessHook(hook redis.ProcessHook) redis.ProcessHook {
+	if h.processHook != nil {
+		return h.processHook(hook)
 	}
-	return nil
+	return hook
 }
 
-func (h *hook) BeforeProcessPipeline(ctx context.Context, cmds []redis.Cmder) (context.Context, error) {
-	if h.beforeProcessPipeline != nil {
-		return h.beforeProcessPipeline(ctx, cmds)
+func (h *hook) ProcessPipelineHook(hook redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	if h.processPipelineHook != nil {
+		return h.processPipelineHook(hook)
 	}
-	return ctx, nil
-}
-
-func (h *hook) AfterProcessPipeline(ctx context.Context, cmds []redis.Cmder) error {
-	if h.afterProcessPipeline != nil {
-		return h.afterProcessPipeline(ctx, cmds)
-	}
-	return nil
+	return hook
 }

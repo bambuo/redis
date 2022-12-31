@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [master, v9]
 
+permissions:
+  contents: read
+
 jobs:
   build:
     name: build
@@ -13,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        go-version: [1.17.x, 1.18.x]
+        go-version: [1.18.x, 1.19.x]
 
     services:
       redis:

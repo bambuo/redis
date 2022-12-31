@@ -14,6 +14,9 @@ type UniversalOptions struct {
 	// of cluster/sentinel nodes.
 	Addrs []string
 
+	// ClientName will execute the `CLIENT SETNAME ClientName` command for each conn.
+	ClientName string
+
 	// Database to be selected after connecting to the server.
 	// Only single-node and failover clients.
 	DB int
@@ -32,19 +35,20 @@ type UniversalOptions struct {
 	MinRetryBackoff time.Duration
 	MaxRetryBackoff time.Duration
 
-	DialTimeout  time.Duration
-	ReadTimeout  time.Duration
-	WriteTimeout time.Duration
+	DialTimeout           time.Duration
+	ReadTimeout           time.Duration
+	WriteTimeout          time.Duration
+	ContextTimeoutEnabled bool
 
 	// PoolFIFO uses FIFO mode for each node connection pool GET/PUT (default LIFO).
 	PoolFIFO bool
 
-	PoolSize           int
-	MinIdleConns       int
-	MaxConnAge         time.Duration
-	PoolTimeout        time.Duration
-	IdleTimeout        time.Duration
-	IdleCheckFrequency time.Duration
+	PoolSize        int
+	PoolTimeout     time.Duration
+	MinIdleConns    int
+	MaxIdleConns    int
+	ConnMaxIdleTime time.Duration
+	ConnMaxLifetime time.Duration
 
 	TLSConfig *tls.Config
 
@@ -68,9 +72,10 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 	}
 
 	return &ClusterOptions{
-		Addrs:     o.Addrs,
-		Dialer:    o.Dialer,
-		OnConnect: o.OnConnect,
+		Addrs:      o.Addrs,
+		ClientName: o.ClientName,
+		Dialer:     o.Dialer,
+		OnConnect:  o.OnConnect,
 
 		Username: o.Username,
 		Password: o.Password,
@@ -84,16 +89,19 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 		MinRetryBackoff: o.MinRetryBackoff,
 		MaxRetryBackoff: o.MaxRetryBackoff,
 
-		DialTimeout:        o.DialTimeout,
-		ReadTimeout:        o.ReadTimeout,
-		WriteTimeout:       o.WriteTimeout,
-		PoolFIFO:           o.PoolFIFO,
-		PoolSize:           o.PoolSize,
-		MinIdleConns:       o.MinIdleConns,
-		MaxConnAge:         o.MaxConnAge,
-		PoolTimeout:        o.PoolTimeout,
-		IdleTimeout:        o.IdleTimeout,
-		IdleCheckFrequency: o.IdleCheckFrequency,
+		DialTimeout:           o.DialTimeout,
+		ReadTimeout:           o.ReadTimeout,
+		WriteTimeout:          o.WriteTimeout,
+		ContextTimeoutEnabled: o.ContextTimeoutEnabled,
+
+		PoolFIFO: o.PoolFIFO,
+
+		PoolSize:        o.PoolSize,
+		PoolTimeout:     o.PoolTimeout,
+		MinIdleConns:    o.MinIdleConns,
+		MaxIdleConns:    o.MaxIdleConns,
+		ConnMaxIdleTime: o.ConnMaxIdleTime,
+		ConnMaxLifetime: o.ConnMaxLifetime,
 
 		TLSConfig: o.TLSConfig,
 	}
@@ -108,6 +116,7 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 	return &FailoverOptions{
 		SentinelAddrs: o.Addrs,
 		MasterName:    o.MasterName,
+		ClientName:    o.ClientName,
 
 		Dialer:    o.Dialer,
 		OnConnect: o.OnConnect,
@@ -122,17 +131,18 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		MinRetryBackoff: o.MinRetryBackoff,
 		MaxRetryBackoff: o.MaxRetryBackoff,
 
-		DialTimeout:  o.DialTimeout,
-		ReadTimeout:  o.ReadTimeout,
-		WriteTimeout: o.WriteTimeout,
+		DialTimeout:           o.DialTimeout,
+		ReadTimeout:           o.ReadTimeout,
+		WriteTimeout:          o.WriteTimeout,
+		ContextTimeoutEnabled: o.ContextTimeoutEnabled,
 
-		PoolFIFO:           o.PoolFIFO,
-		PoolSize:           o.PoolSize,
-		MinIdleConns:       o.MinIdleConns,
-		MaxConnAge:         o.MaxConnAge,
-		PoolTimeout:        o.PoolTimeout,
-		IdleTimeout:        o.IdleTimeout,
-		IdleCheckFrequency: o.IdleCheckFrequency,
+		PoolFIFO:        o.PoolFIFO,
+		PoolSize:        o.PoolSize,
+		PoolTimeout:     o.PoolTimeout,
+		MinIdleConns:    o.MinIdleConns,
+		MaxIdleConns:    o.MaxIdleConns,
+		ConnMaxIdleTime: o.ConnMaxIdleTime,
+		ConnMaxLifetime: o.ConnMaxLifetime,
 
 		TLSConfig: o.TLSConfig,
 	}
@@ -146,9 +156,10 @@ func (o *UniversalOptions) Simple() *Options {
 	}
 
 	return &Options{
-		Addr:      addr,
-		Dialer:    o.Dialer,
-		OnConnect: o.OnConnect,
+		Addr:       addr,
+		ClientName: o.ClientName,
+		Dialer:     o.Dialer,
+		OnConnect:  o.OnConnect,
 
 		DB:       o.DB,
 		Username: o.Username,
@@ -158,17 +169,18 @@ func (o *UniversalOptions) Simple() *Options {
 		MinRetryBackoff: o.MinRetryBackoff,
 		MaxRetryBackoff: o.MaxRetryBackoff,
 
-		DialTimeout:  o.DialTimeout,
-		ReadTimeout:  o.ReadTimeout,
-		WriteTimeout: o.WriteTimeout,
+		DialTimeout:           o.DialTimeout,
+		ReadTimeout:           o.ReadTimeout,
+		WriteTimeout:          o.WriteTimeout,
+		ContextTimeoutEnabled: o.ContextTimeoutEnabled,
 
-		PoolFIFO:           o.PoolFIFO,
-		PoolSize:           o.PoolSize,
-		MinIdleConns:       o.MinIdleConns,
-		MaxConnAge:         o.MaxConnAge,
-		PoolTimeout:        o.PoolTimeout,
-		IdleTimeout:        o.IdleTimeout,
-		IdleCheckFrequency: o.IdleCheckFrequency,
+		PoolFIFO:        o.PoolFIFO,
+		PoolSize:        o.PoolSize,
+		PoolTimeout:     o.PoolTimeout,
+		MinIdleConns:    o.MinIdleConns,
+		MaxIdleConns:    o.MaxIdleConns,
+		ConnMaxIdleTime: o.ConnMaxIdleTime,
+		ConnMaxLifetime: o.ConnMaxLifetime,
 
 		TLSConfig: o.TLSConfig,
 	}
@@ -188,6 +200,7 @@ type UniversalClient interface {
 	Process(ctx context.Context, cmd Cmder) error
 	Subscribe(ctx context.Context, channels ...string) *PubSub
 	PSubscribe(ctx context.Context, channels ...string) *PubSub
+	SSubscribe(ctx context.Context, channels ...string) *PubSub
 	Close() error
 	PoolStats() *PoolStats
 }
