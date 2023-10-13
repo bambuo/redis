@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-redis/redis/v9/internal/proto"
+	"github.com/redis/go-redis/v9/internal/proto"
 )
 
 var ctx = context.TODO()
@@ -30,6 +30,7 @@ func NewClientStub(resp []byte) *ClientStub {
 		Dialer: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return stub.stubConn(initHello), nil
 		},
+		DisableIndentity: true,
 	})
 	return stub
 }
@@ -45,6 +46,8 @@ func NewClusterClientStub(resp []byte) *ClientStub {
 		Dialer: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return stub.stubConn(initHello), nil
 		},
+		DisableIndentity: true,
+
 		ClusterSlots: func(_ context.Context) ([]ClusterSlot, error) {
 			return []ClusterSlot{
 				{

@@ -14,11 +14,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/go-redis/redis/v9/internal"
-	"github.com/go-redis/redis/v9/internal/hashtag"
-	"github.com/go-redis/redis/v9/internal/pool"
-	"github.com/go-redis/redis/v9/internal/proto"
-	"github.com/go-redis/redis/v9/internal/rand"
+	"github.com/redis/go-redis/v9/internal"
+	"github.com/redis/go-redis/v9/internal/hashtag"
+	"github.com/redis/go-redis/v9/internal/pool"
+	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/redis/go-redis/v9/internal/rand"
 )
 
 var errClusterNoNodes = fmt.Errorf("redis: cluster has no nodes")
@@ -62,6 +62,7 @@ type ClusterOptions struct {
 
 	OnConnect func(ctx context.Context, cn *Conn) error
 
+	Protocol int
 	Username string
 	Password string
 
@@ -82,7 +83,8 @@ type ClusterOptions struct {
 	ConnMaxIdleTime time.Duration
 	ConnMaxLifetime time.Duration
 
-	TLSConfig *tls.Config
+	TLSConfig        *tls.Config
+	DisableIndentity bool // Disable set-lib on connect. Default is false.
 }
 
 func (opt *ClusterOptions) init() {
@@ -136,34 +138,39 @@ func (opt *ClusterOptions) init() {
 
 // ParseClusterURL parses a URL into ClusterOptions that can be used to connect to Redis.
 // The URL must be in the form:
-//		redis://<user>:<password>@<host>:<port>
-//		or
-//		rediss://<user>:<password>@<host>:<port>
+//
+//	redis://<user>:<password>@<host>:<port>
+//	or
+//	rediss://<user>:<password>@<host>:<port>
+//
 // To add additional addresses, specify the query parameter, "addr" one or more times. e.g:
-//		redis://<user>:<password>@<host>:<port>?addr=<host2>:<port2>&addr=<host3>:<port3>
-//		or
-//		rediss://<user>:<password>@<host>:<port>?addr=<host2>:<port2>&addr=<host3>:<port3>
+//
+//	redis://<user>:<password>@<host>:<port>?addr=<host2>:<port2>&addr=<host3>:<port3>
+//	or
+//	rediss://<user>:<password>@<host>:<port>?addr=<host2>:<port2>&addr=<host3>:<port3>
 //
 // Most Option fields can be set using query parameters, with the following restrictions:
-//	- field names are mapped using snake-case conversion: to set MaxRetries, use max_retries
-//	- only scalar type fields are supported (bool, int, time.Duration)
-//	- for time.Duration fields, values must be a valid input for time.ParseDuration();
-//	  additionally a plain integer as value (i.e. without unit) is intepreted as seconds
-//	- to disable a duration field, use value less than or equal to 0; to use the default
-//	  value, leave the value blank or remove the parameter
-//	- only the last value is interpreted if a parameter is given multiple times
-//	- fields "network", "addr", "username" and "password" can only be set using other
-//	  URL attributes (scheme, host, userinfo, resp.), query paremeters using these
-//	  names will be treated as unknown parameters
-//	- unknown parameter names will result in an error
+//   - field names are mapped using snake-case conversion: to set MaxRetries, use max_retries
+//   - only scalar type fields are supported (bool, int, time.Duration)
+//   - for time.Duration fields, values must be a valid input for time.ParseDuration();
+//     additionally a plain integer as value (i.e. without unit) is intepreted as seconds
+//   - to disable a duration field, use value less than or equal to 0; to use the default
+//     value, leave the value blank or remove the parameter
+//   - only the last value is interpreted if a parameter is given multiple times
+//   - fields "network", "addr", "username" and "password" can only be set using other
+//     URL attributes (scheme, host, userinfo, resp.), query paremeters using these
+//     names will be treated as unknown parameters
+//   - unknown parameter names will result in an error
+//
 // Example:
-//		redis://user:password@localhost:6789?dial_timeout=3&read_timeout=6s&addr=localhost:6790&addr=localhost:6791
-//		is equivalent to:
-//		&ClusterOptions{
-//			Addr:        ["localhost:6789", "localhost:6790", "localhost:6791"]
-//			DialTimeout: 3 * time.Second, // no time unit = seconds
-//			ReadTimeout: 6 * time.Second,
-//		}
+//
+//	redis://user:password@localhost:6789?dial_timeout=3&read_timeout=6s&addr=localhost:6790&addr=localhost:6791
+//	is equivalent to:
+//	&ClusterOptions{
+//		Addr:        ["localhost:6789", "localhost:6790", "localhost:6791"]
+//		DialTimeout: 3 * time.Second, // no time unit = seconds
+//		ReadTimeout: 6 * time.Second,
+//	}
 func ParseClusterURL(redisURL string) (*ClusterOptions, error) {
 	o := &ClusterOptions{}
 
@@ -211,6 +218,7 @@ func setupClusterConn(u *url.URL, host string, o *ClusterOptions) (*ClusterOptio
 func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, error) {
 	q := queryOptions{q: u.Query()}
 
+	o.Protocol = q.int("protocol")
 	o.ClientName = q.string("client_name")
 	o.MaxRedirects = q.int("max_redirects")
 	o.ReadOnly = q.bool("read_only")
@@ -258,6 +266,7 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		Dialer:     opt.Dialer,
 		OnConnect:  opt.OnConnect,
 
+		Protocol: opt.Protocol,
 		Username: opt.Username,
 		Password: opt.Password,
 
@@ -269,15 +278,15 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		ReadTimeout:  opt.ReadTimeout,
 		WriteTimeout: opt.WriteTimeout,
 
-		PoolFIFO:        opt.PoolFIFO,
-		PoolSize:        opt.PoolSize,
-		PoolTimeout:     opt.PoolTimeout,
-		MinIdleConns:    opt.MinIdleConns,
-		MaxIdleConns:    opt.MaxIdleConns,
-		ConnMaxIdleTime: opt.ConnMaxIdleTime,
-		ConnMaxLifetime: opt.ConnMaxLifetime,
-
-		TLSConfig: opt.TLSConfig,
+		PoolFIFO:         opt.PoolFIFO,
+		PoolSize:         opt.PoolSize,
+		PoolTimeout:      opt.PoolTimeout,
+		MinIdleConns:     opt.MinIdleConns,
+		MaxIdleConns:     opt.MaxIdleConns,
+		ConnMaxIdleTime:  opt.ConnMaxIdleTime,
+		ConnMaxLifetime:  opt.ConnMaxLifetime,
+		DisableIndentity: opt.DisableIndentity,
+		TLSConfig:        opt.TLSConfig,
 		// If ClusterSlots is populated, then we probably have an artificial
 		// cluster whose nodes are not in clustering mode (otherwise there isn't
 		// much use for ClusterSlots config).  This means we cannot execute the
@@ -833,7 +842,7 @@ type ClusterClient struct {
 	state         *clusterStateHolder
 	cmdsInfoCache *cmdsInfoCache
 	cmdable
-	hooks
+	hooksMixin
 }
 
 // NewClusterClient returns a Redis Cluster client as described in
@@ -850,9 +859,12 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	c.cmdsInfoCache = newCmdsInfoCache(c.cmdsInfo)
 	c.cmdable = c.Process
 
-	c.hooks.setProcess(c.process)
-	c.hooks.setProcessPipeline(c.processPipeline)
-	c.hooks.setProcessTxPipeline(c.processTxPipeline)
+	c.initHooks(hooks{
+		dial:       nil,
+		process:    c.process,
+		pipeline:   c.processPipeline,
+		txPipeline: c.processTxPipeline,
+	})
 
 	return c
 }
@@ -884,7 +896,7 @@ func (c *ClusterClient) Do(ctx context.Context, args ...interface{}) *Cmd {
 }
 
 func (c *ClusterClient) Process(ctx context.Context, cmd Cmder) error {
-	err := c.hooks.process(ctx, cmd)
+	err := c.processHook(ctx, cmd)
 	cmd.SetErr(err)
 	return err
 }
@@ -1182,7 +1194,7 @@ func (c *ClusterClient) loadState(ctx context.Context) (*clusterState, error) {
 
 func (c *ClusterClient) Pipeline() Pipeliner {
 	pipe := Pipeline{
-		exec: pipelineExecer(c.hooks.processPipeline),
+		exec: pipelineExecer(c.processPipelineHook),
 	}
 	pipe.init()
 	return &pipe
@@ -1271,7 +1283,7 @@ func (c *ClusterClient) cmdsAreReadOnly(ctx context.Context, cmds []Cmder) bool 
 func (c *ClusterClient) processPipelineNode(
 	ctx context.Context, node *clusterNode, cmds []Cmder, failedCmds *cmdsMap,
 ) {
-	_ = node.Client.hooks.withProcessPipelineHook(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
+	_ = node.Client.withProcessPipelineHook(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
 		cn, err := node.Client.getConn(ctx)
 		if err != nil {
 			_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
@@ -1279,9 +1291,13 @@ func (c *ClusterClient) processPipelineNode(
 			return err
 		}
 
-		err = c.processPipelineNodeConn(ctx, node, cn, cmds, failedCmds)
-		node.Client.releaseConn(ctx, cn, err)
-		return err
+		var processErr error
+		defer func() {
+			node.Client.releaseConn(ctx, cn, processErr)
+		}()
+		processErr = c.processPipelineNodeConn(ctx, node, cn, cmds, failedCmds)
+
+		return processErr
 	})
 }
 
@@ -1375,7 +1391,7 @@ func (c *ClusterClient) TxPipeline() Pipeliner {
 	pipe := Pipeline{
 		exec: func(ctx context.Context, cmds []Cmder) error {
 			cmds = wrapMultiExec(ctx, cmds)
-			return c.hooks.processTxPipeline(ctx, cmds)
+			return c.processTxPipelineHook(ctx, cmds)
 		},
 	}
 	pipe.init()
@@ -1448,7 +1464,7 @@ func (c *ClusterClient) processTxPipelineNode(
 	ctx context.Context, node *clusterNode, cmds []Cmder, failedCmds *cmdsMap,
 ) {
 	cmds = wrapMultiExec(ctx, cmds)
-	_ = node.Client.hooks.withProcessPipelineHook(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
+	_ = node.Client.withProcessPipelineHook(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
 		cn, err := node.Client.getConn(ctx)
 		if err != nil {
 			_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
@@ -1456,9 +1472,13 @@ func (c *ClusterClient) processTxPipelineNode(
 			return err
 		}
 
-		err = c.processTxPipelineNodeConn(ctx, node, cn, cmds, failedCmds)
-		node.Client.releaseConn(ctx, cn, err)
-		return err
+		var processErr error
+		defer func() {
+			node.Client.releaseConn(ctx, cn, processErr)
+		}()
+		processErr = c.processTxPipelineNodeConn(ctx, node, cn, cmds, failedCmds)
+
+		return processErr
 	})
 }
 

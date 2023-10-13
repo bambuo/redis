@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/gomega"
+	. "github.com/bsm/ginkgo/v2"
+	. "github.com/bsm/gomega"
 )
 
 type data struct {
@@ -199,5 +199,17 @@ var _ = Describe("Scan", func() {
 		Expect(td.Name).To(Equal("hello"))
 		Expect(td.Time.UnixNano()).To(Equal(now.UnixNano()))
 		Expect(td.Time.Format(time.RFC3339Nano)).To(Equal(now.Format(time.RFC3339Nano)))
+	})
+
+	It("should time.Time RFC3339Nano", func() {
+		type TimeTime struct {
+			Time time.Time `redis:"time"`
+		}
+
+		now := time.Now()
+
+		var tt TimeTime
+		Expect(Scan(&tt, i{"time"}, i{now.Format(time.RFC3339Nano)})).NotTo(HaveOccurred())
+		Expect(now.Unix()).To(Equal(tt.Time.Unix()))
 	})
 })

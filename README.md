@@ -1,7 +1,7 @@
 # Redis client for Go
 
-[![build workflow](https://github.com/go-redis/redis/actions/workflows/build.yml/badge.svg)](https://github.com/go-redis/redis/actions)
-[![PkgGoDev](https://pkg.go.dev/badge/github.com/go-redis/redis/v8)](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc)
+[![build workflow](https://github.com/redis/go-redis/actions/workflows/build.yml/badge.svg)](https://github.com/redis/go-redis/actions)
+[![PkgGoDev](https://pkg.go.dev/badge/github.com/redis/go-redis/v9)](https://pkg.go.dev/github.com/redis/go-redis/v9?tab=doc)
 [![Documentation](https://img.shields.io/badge/redis-documentation-informational)](https://redis.uptrace.dev/)
 [![Chat](https://discordapp.com/api/guilds/752070105847955518/widget.png)](https://discord.gg/rWtp5Aj)
 
@@ -13,13 +13,17 @@
 > See [OpenTelemetry](example/otel) example which demonstrates how you can use Uptrace to monitor
 > go-redis.
 
+## Documentation
+
+- [English](https://redis.uptrace.dev)
+- [简体中文](https://redis.uptrace.dev/zh/)
+
 ## Resources
 
-- [Documentation](https://redis.uptrace.dev)
-- [Discussions](https://github.com/go-redis/redis/discussions)
+- [Discussions](https://github.com/redis/go-redis/discussions)
 - [Chat](https://discord.gg/rWtp5Aj)
-- [Reference](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc)
-- [Examples](https://pkg.go.dev/github.com/go-redis/redis/v8?tab=doc#pkg-examples)
+- [Reference](https://pkg.go.dev/github.com/redis/go-redis/v9)
+- [Examples](https://pkg.go.dev/github.com/redis/go-redis/v9#pkg-examples)
 
 ## Ecosystem
 
@@ -42,6 +46,7 @@ key value NoSQL database that uses RocksDB as storage engine and is compatible w
 - [Redis Cluster](https://redis.uptrace.dev/guide/go-redis-cluster.html).
 - [Redis Ring](https://redis.uptrace.dev/guide/ring.html).
 - [Redis Performance Monitoring](https://redis.uptrace.dev/guide/redis-performance-monitoring.html).
+- [Redis Probabilistic [RedisStack]](https://redis.io/docs/data-types/probabilistic/)
 
 ## Installation
 
@@ -53,16 +58,10 @@ module:
 go mod init github.com/my/repo
 ```
 
-If you are using **Redis 6**, install go-redis/**v8**:
+Then install go-redis/**v9**:
 
 ```shell
-go get github.com/go-redis/redis/v8
-```
-
-If you are using **Redis 7**, install go-redis/**v9**:
-
-```shell
-go get github.com/go-redis/redis/v9
+go get github.com/redis/go-redis/v9
 ```
 
 ## Quickstart
@@ -70,8 +69,9 @@ go get github.com/go-redis/redis/v9
 ```go
 import (
     "context"
-    "github.com/go-redis/redis/v8"
     "fmt"
+
+    "github.com/redis/go-redis/v9"
 )
 
 var ctx = context.Background()
@@ -106,6 +106,45 @@ func ExampleClient() {
     // key2 does not exist
 }
 ```
+
+The above can be modified to specify the version of the RESP protocol by adding the `protocol` option to the `Options` struct:
+
+```go
+    rdb := redis.NewClient(&redis.Options{
+        Addr:     "localhost:6379",
+        Password: "", // no password set
+        DB:       0,  // use default DB
+        Protocol: 3, // specify 2 for RESP 2 or 3 for RESP 3
+    })
+
+```
+
+### Connecting via a redis url
+
+go-redis also supports connecting via the [redis uri specification](https://github.com/redis/redis-specifications/tree/master/uri/redis.txt). The example below demonstrates how the connection can easily be configured using a string, adhering to this specification.
+
+```go
+import (
+    "context"
+    "fmt"
+
+    "github.com/redis/go-redis/v9"
+)
+
+var ctx = context.Background()
+
+func ExampleClient() {
+    url := "redis://localhost:6379?password=hello&protocol=3"
+    opts, err := redis.ParseURL(url)
+    if err != nil {
+        panic(err)
+    }
+    rdb := redis.NewClient(opts)
+```
+
+## Contributing
+
+Please see [out contributing guidelines](CONTRIBUTING.md) to help us improve this library!
 
 ## Look and feel
 
@@ -169,6 +208,12 @@ Lastly, run:
 go test
 ```
 
+Another option is to run your specific tests with an already running redis. The example below, tests against a redis running on port 9999.:
+
+```shell
+REDIS_PORT=9999 go test <your options>
+```
+
 ## See also
 
 - [Golang ORM](https://bun.uptrace.dev) for PostgreSQL, MySQL, MSSQL, and SQLite
@@ -180,6 +225,6 @@ go test
 
 Thanks to all the people who already contributed!
 
-<a href="https://github.com/go-redis/redis/graphs/contributors">
-  <img src="https://contributors-img.web.app/image?repo=go-redis/redis" />
+<a href="https://github.com/redis/go-redis/graphs/contributors">
+  <img src="https://contributors-img.web.app/image?repo=redis/go-redis" />
 </a>

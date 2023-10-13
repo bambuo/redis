@@ -4,14 +4,15 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"testing"
 	"time"
 
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/gomega"
+	. "github.com/bsm/ginkgo/v2"
+	. "github.com/bsm/gomega"
 
-	"github.com/go-redis/redis/v9"
+	"github.com/redis/go-redis/v9"
 )
 
 type redisHookError struct{}
@@ -64,7 +65,7 @@ var _ = Describe("Client", func() {
 	})
 
 	It("should Stringer", func() {
-		Expect(client.String()).To(Equal("Redis<:6380 db:15>"))
+		Expect(client.String()).To(Equal(fmt.Sprintf("Redis<:%s db:15>", redisPort)))
 	})
 
 	It("supports context", func() {
@@ -182,6 +183,33 @@ var _ = Describe("Client", func() {
 		val, err := db.ClientList(ctx).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).Should(ContainSubstring("name=hi"))
+	})
+
+	It("should client PROTO 2", func() {
+		opt := redisOptions()
+		opt.Protocol = 2
+		db := redis.NewClient(opt)
+
+		defer func() {
+			Expect(db.Close()).NotTo(HaveOccurred())
+		}()
+
+		val, err := db.Do(ctx, "HELLO").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).Should(ContainElements("proto", int64(2)))
+	})
+
+	It("should client PROTO 3", func() {
+		opt := redisOptions()
+		db := redis.NewClient(opt)
+
+		defer func() {
+			Expect(db.Close()).NotTo(HaveOccurred())
+		}()
+
+		val, err := db.Do(ctx, "HELLO").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).Should(HaveKeyWithValue("proto", int64(3)))
 	})
 
 	It("processes custom commands", func() {
@@ -481,5 +509,53 @@ var _ = Describe("Conn", func() {
 		tx.SwapDB(ctx, 1, 0)
 		_, err := tx.Exec(ctx)
 		Expect(err).NotTo(HaveOccurred())
+	})
+})
+
+var _ = Describe("Hook", func() {
+	var client *redis.Client
+
+	BeforeEach(func() {
+		client = redis.NewClient(redisOptions())
+		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+	})
+
+	AfterEach(func() {
+		err := client.Close()
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("fifo", func() {
+		var res []string
+		client.AddHook(&hook{
+			processHook: func(hook redis.ProcessHook) redis.ProcessHook {
+				return func(ctx context.Context, cmd redis.Cmder) error {
+					res = append(res, "hook-1-process-start")
+					err := hook(ctx, cmd)
+					res = append(res, "hook-1-process-end")
+					return err
+				}
+			},
+		})
+		client.AddHook(&hook{
+			processHook: func(hook redis.ProcessHook) redis.ProcessHook {
+				return func(ctx context.Context, cmd redis.Cmder) error {
+					res = append(res, "hook-2-process-start")
+					err := hook(ctx, cmd)
+					res = append(res, "hook-2-process-end")
+					return err
+				}
+			},
+		})
+
+		err := client.Ping(ctx).Err()
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(res).To(Equal([]string{
+			"hook-1-process-start",
+			"hook-2-process-start",
+			"hook-2-process-end",
+			"hook-1-process-end",
+		}))
 	})
 })

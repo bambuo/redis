@@ -1,5 +1,4 @@
 //go:build linux || darwin || dragonfly || freebsd || netbsd || openbsd || solaris || illumos
-// +build linux darwin dragonfly freebsd netbsd openbsd solaris illumos
 
 package pool
 
@@ -8,8 +7,8 @@ import (
 	"net/http/httptest"
 	"time"
 
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/gomega"
+	. "github.com/bsm/ginkgo/v2"
+	. "github.com/bsm/gomega"
 )
 
 var _ = Describe("tests conn_check with real conns", func() {

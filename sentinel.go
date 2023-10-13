@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-redis/redis/v9/internal"
-	"github.com/go-redis/redis/v9/internal/pool"
-	"github.com/go-redis/redis/v9/internal/rand"
+	"github.com/redis/go-redis/v9/internal"
+	"github.com/redis/go-redis/v9/internal/pool"
+	"github.com/redis/go-redis/v9/internal/rand"
 )
 
 //------------------------------------------------------------------------------
@@ -54,6 +54,7 @@ type FailoverOptions struct {
 	Dialer    func(ctx context.Context, network, addr string) (net.Conn, error)
 	OnConnect func(ctx context.Context, cn *Conn) error
 
+	Protocol int
 	Username string
 	Password string
 	DB       int
@@ -88,6 +89,7 @@ func (opt *FailoverOptions) clientOptions() *Options {
 		OnConnect: opt.OnConnect,
 
 		DB:       opt.DB,
+		Protocol: opt.Protocol,
 		Username: opt.Username,
 		Password: opt.Password,
 
@@ -151,6 +153,7 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 		Dialer:    opt.Dialer,
 		OnConnect: opt.OnConnect,
 
+		Protocol: opt.Protocol,
 		Username: opt.Username,
 		Password: opt.Password,
 
@@ -214,7 +217,7 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	}
 	rdb.init()
 
-	connPool = newConnPool(opt, rdb.hooks.dial)
+	connPool = newConnPool(opt, rdb.dialHook)
 	rdb.connPool = connPool
 	rdb.onClose = failover.Close
 
@@ -267,7 +270,7 @@ func masterReplicaDialer(
 // SentinelClient is a client for a Redis Sentinel.
 type SentinelClient struct {
 	*baseClient
-	hooks
+	hooksMixin
 }
 
 func NewSentinelClient(opt *Options) *SentinelClient {
@@ -278,15 +281,17 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 		},
 	}
 
-	c.hooks.setDial(c.baseClient.dial)
-	c.hooks.setProcess(c.baseClient.process)
-	c.connPool = newConnPool(opt, c.hooks.dial)
+	c.initHooks(hooks{
+		dial:    c.baseClient.dial,
+		process: c.baseClient.process,
+	})
+	c.connPool = newConnPool(opt, c.dialHook)
 
 	return c
 }
 
 func (c *SentinelClient) Process(ctx context.Context, cmd Cmder) error {
-	err := c.hooks.process(ctx, cmd)
+	err := c.processHook(ctx, cmd)
 	cmd.SetErr(err)
 	return err
 }

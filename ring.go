@@ -12,12 +12,12 @@ import (
 	"time"
 
 	"github.com/cespare/xxhash/v2"
-	rendezvous "github.com/dgryski/go-rendezvous" //nolint
+	"github.com/dgryski/go-rendezvous" //nolint
 
-	"github.com/go-redis/redis/v9/internal"
-	"github.com/go-redis/redis/v9/internal/hashtag"
-	"github.com/go-redis/redis/v9/internal/pool"
-	"github.com/go-redis/redis/v9/internal/rand"
+	"github.com/redis/go-redis/v9/internal"
+	"github.com/redis/go-redis/v9/internal/hashtag"
+	"github.com/redis/go-redis/v9/internal/pool"
+	"github.com/redis/go-redis/v9/internal/rand"
 )
 
 var errRingShardsDown = errors.New("redis: all ring shards are down")
@@ -70,6 +70,7 @@ type RingOptions struct {
 	Dialer    func(ctx context.Context, network, addr string) (net.Conn, error)
 	OnConnect func(ctx context.Context, cn *Conn) error
 
+	Protocol int
 	Username string
 	Password string
 	DB       int
@@ -136,6 +137,7 @@ func (opt *RingOptions) clientOptions() *Options {
 		Dialer:     opt.Dialer,
 		OnConnect:  opt.OnConnect,
 
+		Protocol: opt.Protocol,
 		Username: opt.Username,
 		Password: opt.Password,
 		DB:       opt.DB,
@@ -290,7 +292,6 @@ func (c *ringSharding) SetAddrs(addrs map[string]string) {
 func (c *ringSharding) newRingShards(
 	addrs map[string]string, existing *ringShards,
 ) (shards *ringShards, created, unused map[string]*ringShard) {
-
 	shards = &ringShards{m: make(map[string]*ringShard, len(addrs))}
 	created = make(map[string]*ringShard) // indexed by addr
 	unused = make(map[string]*ringShard)  // indexed by addr
@@ -487,7 +488,7 @@ func (c *ringSharding) Close() error {
 // Otherwise you should use Redis Cluster.
 type Ring struct {
 	cmdable
-	hooks
+	hooksMixin
 
 	opt               *RingOptions
 	sharding          *ringSharding
@@ -509,12 +510,14 @@ func NewRing(opt *RingOptions) *Ring {
 	ring.cmdsInfoCache = newCmdsInfoCache(ring.cmdsInfo)
 	ring.cmdable = ring.Process
 
-	ring.hooks.setProcess(ring.process)
-	ring.hooks.setProcessPipeline(func(ctx context.Context, cmds []Cmder) error {
-		return ring.generalProcessPipeline(ctx, cmds, false)
-	})
-	ring.hooks.setProcessTxPipeline(func(ctx context.Context, cmds []Cmder) error {
-		return ring.generalProcessPipeline(ctx, cmds, true)
+	ring.initHooks(hooks{
+		process: ring.process,
+		pipeline: func(ctx context.Context, cmds []Cmder) error {
+			return ring.generalProcessPipeline(ctx, cmds, false)
+		},
+		txPipeline: func(ctx context.Context, cmds []Cmder) error {
+			return ring.generalProcessPipeline(ctx, cmds, true)
+		},
 	})
 
 	go ring.sharding.Heartbeat(hbCtx, opt.HeartbeatFrequency)
@@ -534,7 +537,7 @@ func (c *Ring) Do(ctx context.Context, args ...interface{}) *Cmd {
 }
 
 func (c *Ring) Process(ctx context.Context, cmd Cmder) error {
-	err := c.hooks.process(ctx, cmd)
+	err := c.processHook(ctx, cmd)
 	cmd.SetErr(err)
 	return err
 }
@@ -717,7 +720,7 @@ func (c *Ring) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder
 
 func (c *Ring) Pipeline() Pipeliner {
 	pipe := Pipeline{
-		exec: pipelineExecer(c.hooks.processPipeline),
+		exec: pipelineExecer(c.processPipelineHook),
 	}
 	pipe.init()
 	return &pipe
@@ -731,7 +734,7 @@ func (c *Ring) TxPipeline() Pipeliner {
 	pipe := Pipeline{
 		exec: func(ctx context.Context, cmds []Cmder) error {
 			cmds = wrapMultiExec(ctx, cmds)
-			return c.hooks.processTxPipeline(ctx, cmds)
+			return c.processTxPipelineHook(ctx, cmds)
 		},
 	}
 	pipe.init()
@@ -772,9 +775,9 @@ func (c *Ring) generalProcessPipeline(
 
 			if tx {
 				cmds = wrapMultiExec(ctx, cmds)
-				_ = shard.Client.hooks.processTxPipeline(ctx, cmds)
+				_ = shard.Client.processTxPipelineHook(ctx, cmds)
 			} else {
-				_ = shard.Client.hooks.processPipeline(ctx, cmds)
+				_ = shard.Client.processPipelineHook(ctx, cmds)
 			}
 		}(hash, cmds)
 	}

@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-redis/redis/v9/internal/pool"
+	"github.com/redis/go-redis/v9/internal/pool"
 )
 
 // Limiter is the interface of a rate limiter or a circuit breaker.
@@ -45,6 +45,9 @@ type Options struct {
 	// Hook that is called when new connection is established.
 	OnConnect func(ctx context.Context, cn *Conn) error
 
+	// Protocol 2 or 3. Use the version to negotiate RESP version with redis-server.
+	// Default is 3.
+	Protocol int
 	// Use the specified Username to authenticate the current connection
 	// with one of the connections defined in the ACL list when connecting
 	// to a Redis 6.0 instance, or greater, that is using the Redis ACL system.
@@ -95,8 +98,10 @@ type Options struct {
 	// Note that FIFO has slightly higher overhead compared to LIFO,
 	// but it helps closing idle connections faster reducing the pool size.
 	PoolFIFO bool
-	// Maximum number of socket connections.
+	// Base number of socket connections.
 	// Default is 10 connections per every available CPU as reported by runtime.GOMAXPROCS.
+	// If there is not enough connections in the pool, new connections will be allocated in excess of PoolSize,
+	// you can limit it through MaxActiveConns
 	PoolSize int
 	// Amount of time client waits for connection if all connections
 	// are busy before returning an error.
@@ -104,9 +109,14 @@ type Options struct {
 	PoolTimeout time.Duration
 	// Minimum number of idle connections which is useful when establishing
 	// new connection is slow.
+	// Default is 0. the idle connections are not closed by default.
 	MinIdleConns int
 	// Maximum number of idle connections.
+	// Default is 0. the idle connections are not closed by default.
 	MaxIdleConns int
+	// Maximum number of connections allocated by the pool at a given time.
+	// When zero, there is no limit on the number of connections in the pool.
+	MaxActiveConns int
 	// ConnMaxIdleTime is the maximum amount of time a connection may be idle.
 	// Should be less than server's timeout.
 	//
@@ -131,6 +141,9 @@ type Options struct {
 
 	// Enables read only queries on slave/follower nodes.
 	readOnly bool
+
+	// // Disable set-lib on connect. Default is false.
+	DisableIndentity bool
 }
 
 func (opt *Options) init() {
@@ -223,32 +236,38 @@ func NewDialer(opt *Options) func(context.Context, string, string) (net.Conn, er
 // Scheme is required.
 // There are two connection types: by tcp socket and by unix socket.
 // Tcp connection:
-//		redis://<user>:<password>@<host>:<port>/<db_number>
+//
+//	redis://<user>:<password>@<host>:<port>/<db_number>
+//
 // Unix connection:
-//		unix://<user>:<password>@</path/to/redis.sock>?db=<db_number>
+//
+//	unix://<user>:<password>@</path/to/redis.sock>?db=<db_number>
+//
 // Most Option fields can be set using query parameters, with the following restrictions:
-//	- field names are mapped using snake-case conversion: to set MaxRetries, use max_retries
-//	- only scalar type fields are supported (bool, int, time.Duration)
-//	- for time.Duration fields, values must be a valid input for time.ParseDuration();
-//	  additionally a plain integer as value (i.e. without unit) is intepreted as seconds
-//	- to disable a duration field, use value less than or equal to 0; to use the default
-//	  value, leave the value blank or remove the parameter
-//	- only the last value is interpreted if a parameter is given multiple times
-//	- fields "network", "addr", "username" and "password" can only be set using other
-//	  URL attributes (scheme, host, userinfo, resp.), query paremeters using these
-//	  names will be treated as unknown parameters
-//	- unknown parameter names will result in an error
+//   - field names are mapped using snake-case conversion: to set MaxRetries, use max_retries
+//   - only scalar type fields are supported (bool, int, time.Duration)
+//   - for time.Duration fields, values must be a valid input for time.ParseDuration();
+//     additionally a plain integer as value (i.e. without unit) is intepreted as seconds
+//   - to disable a duration field, use value less than or equal to 0; to use the default
+//     value, leave the value blank or remove the parameter
+//   - only the last value is interpreted if a parameter is given multiple times
+//   - fields "network", "addr", "username" and "password" can only be set using other
+//     URL attributes (scheme, host, userinfo, resp.), query paremeters using these
+//     names will be treated as unknown parameters
+//   - unknown parameter names will result in an error
+//
 // Examples:
-//		redis://user:password@localhost:6789/3?dial_timeout=3&db=1&read_timeout=6s&max_retries=2
-//		is equivalent to:
-//		&Options{
-//			Network:     "tcp",
-//			Addr:        "localhost:6789",
-//			DB:          1,               // path "/3" was overridden by "&db=1"
-//			DialTimeout: 3 * time.Second, // no time unit = seconds
-//			ReadTimeout: 6 * time.Second,
-//			MaxRetries:  2,
-//		}
+//
+//	redis://user:password@localhost:6789/3?dial_timeout=3&db=1&read_timeout=6s&max_retries=2
+//	is equivalent to:
+//	&Options{
+//		Network:     "tcp",
+//		Addr:        "localhost:6789",
+//		DB:          1,               // path "/3" was overridden by "&db=1"
+//		DialTimeout: 3 * time.Second, // no time unit = seconds
+//		ReadTimeout: 6 * time.Second,
+//		MaxRetries:  2,
+//	}
 func ParseURL(redisURL string) (*Options, error) {
 	u, err := url.Parse(redisURL)
 	if err != nil {
@@ -429,6 +448,7 @@ func setupConnParams(u *url.URL, o *Options) (*Options, error) {
 		o.DB = db
 	}
 
+	o.Protocol = q.int("protocol")
 	o.ClientName = q.string("client_name")
 	o.MaxRetries = q.int("max_retries")
 	o.MinRetryBackoff = q.duration("min_retry_backoff")
@@ -487,6 +507,7 @@ func newConnPool(
 		PoolTimeout:     opt.PoolTimeout,
 		MinIdleConns:    opt.MinIdleConns,
 		MaxIdleConns:    opt.MaxIdleConns,
+		MaxActiveConns:  opt.MaxActiveConns,
 		ConnMaxIdleTime: opt.ConnMaxIdleTime,
 		ConnMaxLifetime: opt.ConnMaxLifetime,
 	})

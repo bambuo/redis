@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-redis/redis/v9"
+	"github.com/redis/go-redis/v9"
 )
 
 var (
@@ -197,6 +197,21 @@ func ExampleClient_SetEx() {
 	}
 }
 
+func ExampleClient_HSet() {
+	// Set "redis" tag for hash key
+	type ExampleUser struct {
+		Name string `redis:"name"`
+		Age  int    `redis:"age"`
+	}
+
+	items := ExampleUser{"jane", 22}
+
+	err := rdb.HSet(ctx, "user:1", items).Err()
+	if err != nil {
+		panic(err)
+	}
+}
+
 func ExampleClient_Incr() {
 	result, err := rdb.Incr(ctx, "counter").Result()
 	if err != nil {
@@ -212,7 +227,7 @@ func ExampleClient_BLPop() {
 		panic(err)
 	}
 
-	// use `rdb.BLPop(0, "queue")` for infinite waiting time
+	// use `rdb.BLPop(ctx, 0, "queue")` for infinite waiting time
 	result, err := rdb.BLPop(ctx, 1*time.Second, "queue").Result()
 	if err != nil {
 		panic(err)

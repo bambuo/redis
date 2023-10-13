@@ -10,15 +10,13 @@ import (
 	"testing"
 	"time"
 
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/gomega"
+	. "github.com/bsm/ginkgo/v2"
+	. "github.com/bsm/gomega"
 
-	"github.com/go-redis/redis/v9"
+	"github.com/redis/go-redis/v9"
 )
 
 const (
-	redisPort          = "6380"
-	redisAddr          = ":" + redisPort
 	redisSecondaryPort = "6381"
 )
 
@@ -36,6 +34,11 @@ const (
 	sentinelPort1      = "9126"
 	sentinelPort2      = "9127"
 	sentinelPort3      = "9128"
+)
+
+var (
+	redisPort = "6380"
+	redisAddr = ":" + redisPort
 )
 
 var (
@@ -64,6 +67,11 @@ func registerProcess(port string, p *redisProcess) {
 }
 
 var _ = BeforeSuite(func() {
+	addr := os.Getenv("REDIS_PORT")
+	if addr != "" {
+		redisPort = addr
+		redisAddr = ":" + redisPort
+	}
 	var err error
 
 	redisMain, err = startRedis(redisPort)
@@ -308,7 +316,7 @@ func startRedis(port string, args ...string) (*redisProcess, error) {
 		return nil, err
 	}
 
-	baseArgs := []string{filepath.Join(dir, "redis.conf"), "--port", port, "--dir", dir}
+	baseArgs := []string{filepath.Join(dir, "redis.conf"), "--port", port, "--dir", dir, "--enable-module-command", "yes"}
 	process, err := execCmd(redisServerBin, append(baseArgs, args...)...)
 	if err != nil {
 		return nil, err
