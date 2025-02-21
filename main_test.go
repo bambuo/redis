@@ -6,13 +6,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
-
 	"github.com/redis/go-redis/v9"
 )
 
@@ -27,7 +27,7 @@ const (
 )
 
 const (
-	sentinelName       = "mymaster"
+	sentinelName       = "go-redis-test"
 	sentinelMasterPort = "9123"
 	sentinelSlave1Port = "9124"
 	sentinelSlave2Port = "9125"
@@ -42,6 +42,11 @@ var (
 )
 
 var (
+	redisStackPort = "6379"
+	redisStackAddr = ":" + redisStackPort
+)
+
+var (
 	sentinelAddrs = []string{":" + sentinelPort1, ":" + sentinelPort2, ":" + sentinelPort3}
 
 	processes map[string]*redisProcess
@@ -53,10 +58,33 @@ var (
 )
 
 var cluster = &clusterScenario{
-	ports:     []string{"8220", "8221", "8222", "8223", "8224", "8225"},
+	ports:     []string{"16600", "16601", "16602", "16603", "16604", "16605"},
 	nodeIDs:   make([]string, 6),
 	processes: make(map[string]*redisProcess, 6),
 	clients:   make(map[string]*redis.Client, 6),
+}
+
+// Redis Software Cluster
+var RECluster = false
+
+// Redis Community Edition Docker
+var RCEDocker = false
+
+// Notes the major version of redis we are executing tests.
+// This can be used before we change the bsm fork of ginkgo for one,
+// which have support for label sets, so we can filter tests per redis major version.
+var RedisMajorVersion = 7
+
+func SkipBeforeRedisMajor(version int, msg string) {
+	if RedisMajorVersion < version {
+		Skip(fmt.Sprintf("(redis major version < %d) %s", version, msg))
+	}
+}
+
+func SkipAfterRedisMajor(version int, msg string) {
+	if RedisMajorVersion > version {
+		Skip(fmt.Sprintf("(redis major version > %d) %s", version, msg))
+	}
 }
 
 func registerProcess(port string, p *redisProcess) {
@@ -73,45 +101,76 @@ var _ = BeforeSuite(func() {
 		redisAddr = ":" + redisPort
 	}
 	var err error
+	RECluster, _ = strconv.ParseBool(os.Getenv("RE_CLUSTER"))
+	RCEDocker, _ = strconv.ParseBool(os.Getenv("RCE_DOCKER"))
 
-	redisMain, err = startRedis(redisPort)
-	Expect(err).NotTo(HaveOccurred())
+	RedisMajorVersion, _ = strconv.Atoi(os.Getenv("REDIS_MAJOR_VERSION"))
 
-	ringShard1, err = startRedis(ringShard1Port)
-	Expect(err).NotTo(HaveOccurred())
+	if RedisMajorVersion == 0 {
+		RedisMajorVersion = 7
+	}
 
-	ringShard2, err = startRedis(ringShard2Port)
-	Expect(err).NotTo(HaveOccurred())
+	fmt.Printf("RECluster: %v\n", RECluster)
+	fmt.Printf("RCEDocker: %v\n", RCEDocker)
+	fmt.Printf("REDIS_MAJOR_VERSION: %v\n", RedisMajorVersion)
 
-	ringShard3, err = startRedis(ringShard3Port)
-	Expect(err).NotTo(HaveOccurred())
+	if RedisMajorVersion < 6 || RedisMajorVersion > 8 {
+		panic("incorrect or not supported redis major version")
+	}
 
-	sentinelMaster, err = startRedis(sentinelMasterPort)
-	Expect(err).NotTo(HaveOccurred())
+	if !RECluster && !RCEDocker {
 
-	sentinel1, err = startSentinel(sentinelPort1, sentinelName, sentinelMasterPort)
-	Expect(err).NotTo(HaveOccurred())
+		redisMain, err = startRedis(redisPort)
+		Expect(err).NotTo(HaveOccurred())
 
-	sentinel2, err = startSentinel(sentinelPort2, sentinelName, sentinelMasterPort)
-	Expect(err).NotTo(HaveOccurred())
+		ringShard1, err = startRedis(ringShard1Port)
+		Expect(err).NotTo(HaveOccurred())
 
-	sentinel3, err = startSentinel(sentinelPort3, sentinelName, sentinelMasterPort)
-	Expect(err).NotTo(HaveOccurred())
+		ringShard2, err = startRedis(ringShard2Port)
+		Expect(err).NotTo(HaveOccurred())
 
-	sentinelSlave1, err = startRedis(
-		sentinelSlave1Port, "--slaveof", "127.0.0.1", sentinelMasterPort)
-	Expect(err).NotTo(HaveOccurred())
+		ringShard3, err = startRedis(ringShard3Port)
+		Expect(err).NotTo(HaveOccurred())
 
-	sentinelSlave2, err = startRedis(
-		sentinelSlave2Port, "--slaveof", "127.0.0.1", sentinelMasterPort)
-	Expect(err).NotTo(HaveOccurred())
+		sentinelMaster, err = startRedis(sentinelMasterPort)
+		Expect(err).NotTo(HaveOccurred())
 
-	Expect(startCluster(ctx, cluster)).NotTo(HaveOccurred())
+		sentinel1, err = startSentinel(sentinelPort1, sentinelName, sentinelMasterPort)
+		Expect(err).NotTo(HaveOccurred())
+
+		sentinel2, err = startSentinel(sentinelPort2, sentinelName, sentinelMasterPort)
+		Expect(err).NotTo(HaveOccurred())
+
+		sentinel3, err = startSentinel(sentinelPort3, sentinelName, sentinelMasterPort)
+		Expect(err).NotTo(HaveOccurred())
+
+		sentinelSlave1, err = startRedis(
+			sentinelSlave1Port, "--slaveof", "127.0.0.1", sentinelMasterPort)
+		Expect(err).NotTo(HaveOccurred())
+
+		sentinelSlave2, err = startRedis(
+			sentinelSlave2Port, "--slaveof", "127.0.0.1", sentinelMasterPort)
+		Expect(err).NotTo(HaveOccurred())
+
+		err = startCluster(ctx, cluster)
+		Expect(err).NotTo(HaveOccurred())
+	} else {
+		redisPort = redisStackPort
+		redisAddr = redisStackAddr
+
+		if !RECluster {
+			// populate cluster node information
+			Expect(configureClusterTopology(ctx, cluster)).NotTo(HaveOccurred())
+		}
+	}
 })
 
 var _ = AfterSuite(func() {
-	Expect(cluster.Close()).NotTo(HaveOccurred())
+	if !RECluster {
+		Expect(cluster.Close()).NotTo(HaveOccurred())
+	}
 
+	// NOOP if there are no processes registered
 	for _, p := range processes {
 		Expect(p.Close()).NotTo(HaveOccurred())
 	}
@@ -126,6 +185,23 @@ func TestGinkgoSuite(t *testing.T) {
 //------------------------------------------------------------------------------
 
 func redisOptions() *redis.Options {
+	if RECluster {
+		return &redis.Options{
+			Addr: redisAddr,
+			DB:   0,
+
+			DialTimeout:           10 * time.Second,
+			ReadTimeout:           30 * time.Second,
+			WriteTimeout:          30 * time.Second,
+			ContextTimeoutEnabled: true,
+
+			MaxRetries: -1,
+
+			PoolSize:        10,
+			PoolTimeout:     30 * time.Second,
+			ConnMaxIdleTime: time.Minute,
+		}
+	}
 	return &redis.Options{
 		Addr: redisAddr,
 		DB:   15,
